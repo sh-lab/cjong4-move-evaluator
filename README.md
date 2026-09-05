@@ -7,6 +7,8 @@
 > [!NOTE]
 > 現在のdataset/model形式は v1、特徴量スキーマは v2 です。
 > 各形式はバージョンで互換性を検証します。
+> 物理牌単位の入力と共有Tile Encoderを使用する[特徴量スキーマ v3](docs/feature-schema-v3.md)を
+> 次期形式として採用済みですが、まだ実装されていません。
 
 ## 目的
 
@@ -69,6 +71,27 @@ Input
 - 出力層: 活性化関数なしのスカラー値
 - 推論時の動的メモリ確保: なし
 - 行動選択: 全合法手の評価値の `argmax`
+
+### 次期v3モデル
+
+現在のv2は手牌、捨て牌、副露などを牌種別に集約している。次期v3ではcjong4の
+`locations[136]` が持つ物理牌単位の対応を維持し、同じ重みのTile Encoderを
+136牌へ適用する。
+
+```text
+各物理牌 13 -> Dense 16 + ReLU -> Dense 8 + ReLU（136牌で重み共有）
+136 x 8 = 1088
+局面情報 33
+合法手情報 2
+        |
+        v
+1123 -> Dense 128 -> Dense 64 -> Dense 16 -> Dense 1
+```
+
+物理牌の13入力は、山、捨て牌、捨て牌履歴、手牌・面子、赤牌、およびツモ牌や
+合法手との参照関係から作る。プレイヤー番号はすべて観測者基準へ相対化し、
+局番号、残り山牌数、ルール設定はNN入力に含めない。詳細は
+[特徴量スキーマ v3](docs/feature-schema-v3.md)を参照する。
 
 ### 量子化
 
@@ -281,6 +304,7 @@ python -m cj4me.train \
   --validation-dataset validation.cj4medata \
   --epochs 10 \
   --batch-size 1024 \
+  --patience 5 \
   --seed 1 \
   --output model.pt
 
@@ -290,6 +314,10 @@ python -m cj4me.export \
   --int8-output model-i8.cj4memodel \
   --calibration-dataset samples.cj4medata
 ```
+
+trainerはvalidation lossが最良だったepochのcheckpointを保存します。
+`--patience` 回連続で改善しなければearly stoppingし、`0`を指定すると
+early stoppingを無効にします。`--min-delta`で改善とみなす最小値を指定できます。
 
 ## Emscripten
 
@@ -311,6 +339,7 @@ cmake --build build-wasm --parallel
 ## 形式仕様
 
 - [特徴量スキーマ v2](docs/feature-schema-v2.md)
+- [特徴量スキーマ v3（採用設計・未実装）](docs/feature-schema-v3.md)
 - [dataset形式 v1](docs/dataset-format-v1.md)
 - [model形式 v1](docs/model-format-v1.md)
 
