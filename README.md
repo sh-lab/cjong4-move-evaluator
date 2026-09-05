@@ -314,6 +314,10 @@ cmake --build build-wasm --parallel
 - [dataset形式 v1](docs/dataset-format-v1.md)
 - [model形式 v1](docs/model-format-v1.md)
 
+## 今後の開発方針
+
+- [個性モデル・報酬・方策フィルター・Monte Carloのロードマップ](docs/roadmap.md)
+
 ## 初回実装の制限
 
 - 記録するのは実際に選択した行動の on-policy return だけです。
