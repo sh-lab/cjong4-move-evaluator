@@ -1,8 +1,6 @@
-# Feature schema v3（採用設計・未実装）
+# Feature schema v3
 
-この文書は、物理牌単位の情報を保持する特徴量スキーマv3の採用設計を定義する。
-現在の実装は集約型のv2であり、v3の実装完了まではdatasetとmodelの現行形式を
-変更しない。
+この文書は、実装済みの物理牌単位特徴量スキーマv3を定義する。
 
 ## 原則
 
@@ -163,13 +161,7 @@ normalized = 2 * category / max_category - 1
 
 ## v2との互換性
 
-v3は牌種別枚数へ集約するv2と互換性がない。実装時には少なくとも次を更新する。
-
-- feature schema version
-- PyTorchモデル構造
-- Pure C float32/INT8推論
-- model形式
-- dataset形式またはdatasetからv3入力を生成する境界
-- C/Python相互fixture
+v3は牌種別枚数へ集約するv2と互換性がない。feature schema、PyTorchモデル、
+Pure C float32/INT8推論、model形式およびdataset recordのfeature countを更新した。
 
 既存のv2 dataset、checkpoint、float32 model、INT8 modelはv3モデルへ読み込まない。

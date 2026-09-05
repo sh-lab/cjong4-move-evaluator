@@ -11,23 +11,23 @@ The header is exactly 32 bytes.
 | ---: | ---: | --- |
 | 0 | 8 | ASCII `CJ4MEDA1` |
 | 8 | 4 | format version (`1`) |
-| 12 | 4 | feature schema version (`2`) |
-| 16 | 4 | feature count (`1369`) |
+| 12 | 4 | feature schema version (`3`) |
+| 16 | 4 | feature count (`1803`) |
 | 20 | 4 | record count |
-| 24 | 4 | record size (`5484`) |
+| 24 | 4 | record size (`7220`) |
 | 28 | 4 | reserved, must be zero |
 
 ## Record
 
-Every record is exactly 5484 bytes.
+Every record is exactly 7220 bytes.
 
 | Offset | Size | Value |
 | ---: | ---: | --- |
-| 0 | 5476 | 1369 float32 features |
-| 5476 | 4 | float32 target |
-| 5480 | 1 | absolute action player |
-| 5481 | 1 | action type |
-| 5482 | 2 | flags/reserved |
+| 0 | 7212 | 1803 float32 features (feature schema v3) |
+| 7212 | 4 | float32 target |
+| 7216 | 1 | absolute action player |
+| 7217 | 1 | action type |
+| 7218 | 2 | flags/reserved |
 
 The target is the on-policy round return:
 

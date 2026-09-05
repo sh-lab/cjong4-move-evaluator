@@ -5,11 +5,17 @@ import pytest
 import torch
 
 from cj4me.dataset import (
+    ACTION_FEATURE_COUNT,
     DATASET_MAGIC,
     DATASET_FORMAT_VERSION,
     DATASET_RECORD_SIZE,
     FEATURE_COUNT,
     FEATURE_SCHEMA_VERSION,
+    SCORE_INPUT_COUNT,
+    STATE_FEATURE_COUNT,
+    TILE_COUNT,
+    TILE_EMBEDDING_COUNT,
+    TILE_FEATURE_COUNT,
     DatasetV1,
 )
 from cj4me.export import (
@@ -34,7 +40,7 @@ from cj4me.quantize import (
 
 
 def parse_model(data):
-    header = struct.unpack("<8s10IQ2I", data[:MODEL_HEADER_SIZE])
+    header = struct.unpack("<8s16IQ2I", data[:MODEL_HEADER_SIZE])
     tensors = []
     offset = MODEL_HEADER_SIZE
     while offset < len(data):
@@ -84,19 +90,25 @@ def test_float_export_header_and_tensors_equal_state_dict():
 
     assert len(data) == FLOAT_MODEL_SIZE
     assert header == (
-        b"CJ4MEM01",
+        b"CJ4MEM02",
         MODEL_FORMAT_VERSION,
         FEATURE_SCHEMA_VERSION,
         1,
-        4,
-        FEATURE_COUNT,
+        6,
+        TILE_COUNT,
+        TILE_FEATURE_COUNT,
+        16,
+        TILE_EMBEDDING_COUNT,
+        STATE_FEATURE_COUNT,
+        ACTION_FEATURE_COUNT,
+        SCORE_INPUT_COUNT,
         128,
         64,
         16,
         1,
-        8,
-        len(data) - 64,
-        64,
+        12,
+        len(data) - MODEL_HEADER_SIZE,
+        MODEL_HEADER_SIZE,
         0,
     )
     state_values = list(model.state_dict().values())
@@ -105,7 +117,9 @@ def test_float_export_header_and_tensors_equal_state_dict():
         for index, value in enumerate(state_values, start=1)
     ]
     for (_, _, count, encoded), expected in zip(tensors, state_values):
-        actual = np.frombuffer(encoded, dtype="<f4", count=count).reshape(expected.shape)
+        actual = np.frombuffer(encoded, dtype="<f4", count=count).reshape(
+            expected.shape
+        )
         np.testing.assert_array_equal(actual, expected.numpy())
 
 
@@ -121,20 +135,24 @@ def test_checkpoint_validation_rejects_metadata_shape_and_nonfinite(tmp_path):
 
     bad_shape = make_checkpoint(model)
     bad_shape["model_state_dict"] = dict(model.state_dict())
-    bad_shape["model_state_dict"]["network.0.bias"] = torch.zeros(127)
+    bad_shape["model_state_dict"]["score_network.0.bias"] = torch.zeros(127)
     with pytest.raises(ValueError, match="shape"):
         validate_checkpoint(bad_shape)
 
     bad_finite = make_checkpoint(model)
     bad_finite["model_state_dict"] = dict(model.state_dict())
-    bad_finite["model_state_dict"]["network.6.bias"] = torch.tensor([float("nan")])
+    bad_finite["model_state_dict"]["score_network.6.bias"] = torch.tensor(
+        [float("nan")]
+    )
     with pytest.raises(ValueError, match="non-finite"):
         validate_checkpoint(bad_finite)
 
     path = tmp_path / "model.pt"
     torch.save(checkpoint, path)
     _, loaded = load_checkpoint(path)
-    assert torch.equal(loaded.state_dict()["network.0.weight"], model.network[0].weight)
+    assert torch.equal(
+        loaded.state_dict()["score_network.0.weight"], model.score_network[0].weight
+    )
 
 
 def test_quantization_scales_clamp_bias_and_requant():
@@ -169,10 +187,12 @@ def test_ptq_tensor_order_shapes_and_output_scale(tmp_path):
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.fill_(0.0)
-        model.network[0].weight[0, 0] = 1.0
-        model.network[2].weight[0, 0] = 1.0
-        model.network[4].weight[0, 0] = 1.0
-        model.network[6].weight[0, 0] = 1.0
+        model.tile_encoder[0].weight[0, 0] = 1.0
+        model.tile_encoder[2].weight[0, 0] = 1.0
+        model.score_network[0].weight[0, 0] = 1.0
+        model.score_network[2].weight[0, 0] = 1.0
+        model.score_network[4].weight[0, 0] = 1.0
+        model.score_network[6].weight[0, 0] = 1.0
 
     path = tmp_path / "calibration.cj4medata"
     row = np.zeros(FEATURE_COUNT, dtype=np.float32)
@@ -184,9 +204,15 @@ def test_ptq_tensor_order_shapes_and_output_scale(tmp_path):
 
     assert len(data) == INT8_MODEL_SIZE
     assert header[3] == 2
-    assert header[10] == 15
-    assert [tensor[0] for tensor in tensors] == list(range(101, 116))
+    assert header[16] == 21
+    assert [tensor[0] for tensor in tensors] == list(range(101, 122))
     assert [tensor[1] for tensor in tensors] == [
+        2,
+        3,
+        1,
+        2,
+        3,
+        1,
         2,
         3,
         1,
@@ -203,14 +229,14 @@ def test_ptq_tensor_order_shapes_and_output_scale(tmp_path):
         3,
         3,
     ]
-    assert quantized.requant_multipliers.shape == (208,)
-    assert quantized.requant_shifts.shape == (208,)
-    assert quantized.activation_scales.shape == (5,)
+    assert quantized.requant_multipliers.shape == (232,)
+    assert quantized.requant_shifts.shape == (232,)
+    assert quantized.activation_scales.shape == (7,)
     np.testing.assert_array_equal(
-        quantized.activation_scales[:4], np.ones(4, dtype=np.float32)
+        quantized.activation_scales[:6], np.ones(6, dtype=np.float32)
     )
-    assert quantized.activation_scales[4] == np.float32(
-        quantized.activation_scales[3] * quantized.weight_scales[3][0]
+    assert quantized.activation_scales[6] == np.float32(
+        quantized.activation_scales[5] * quantized.weight_scales[5][0]
     )
 
 
@@ -219,10 +245,12 @@ def test_reference_int8_tracks_float_output_and_argmax(tmp_path):
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.zero_()
-        model.network[0].weight[0, 0] = 1.0
-        model.network[2].weight[0, 0] = 1.0
-        model.network[4].weight[0, 0] = 1.0
-        model.network[6].weight[0, 0] = 1.0
+        model.tile_encoder[0].weight[0, 0] = 1.0
+        model.tile_encoder[2].weight[0, 0] = 1.0
+        model.score_network[0].weight[0, 0] = 1.0
+        model.score_network[2].weight[0, 0] = 1.0
+        model.score_network[4].weight[0, 0] = 1.0
+        model.score_network[6].weight[0, 0] = 1.0
 
     rows = []
     for value in (0.0, 10.0, 20.0):
@@ -237,7 +265,9 @@ def test_reference_int8_tracks_float_output_and_argmax(tmp_path):
     integer_outputs = np.asarray(
         [infer_int8_reference(quantized, row) for row in rows], dtype=np.int32
     )
-    reference_outputs = integer_outputs.astype(np.float32) * quantized.activation_scales[4]
+    reference_outputs = (
+        integer_outputs.astype(np.float32) * quantized.activation_scales[6]
+    )
 
     np.testing.assert_allclose(reference_outputs, float_outputs, atol=0.1, rtol=0.0)
     assert np.argmax(reference_outputs) == np.argmax(float_outputs)
@@ -245,7 +275,9 @@ def test_reference_int8_tracks_float_output_and_argmax(tmp_path):
 
 def test_reference_int8_ties_and_boundary_saturation():
     weights = [
-        np.zeros((128, FEATURE_COUNT), dtype=np.int8),
+        np.zeros((16, 13), dtype=np.int8),
+        np.zeros((8, 16), dtype=np.int8),
+        np.zeros((128, SCORE_INPUT_COUNT), dtype=np.int8),
         np.zeros((64, 128), dtype=np.int8),
         np.zeros((16, 64), dtype=np.int8),
         np.zeros((1, 16), dtype=np.int8),
@@ -255,20 +287,24 @@ def test_reference_int8_ties_and_boundary_saturation():
     model = QuantizedModel(
         weights=tuple(weights),
         biases=(
+            np.zeros(16, dtype="<i4"),
+            np.zeros(8, dtype="<i4"),
             np.zeros(128, dtype="<i4"),
             np.zeros(64, dtype="<i4"),
             np.zeros(16, dtype="<i4"),
             np.zeros(1, dtype="<i4"),
         ),
         weight_scales=(
+            np.ones(16, dtype="<f4"),
+            np.ones(8, dtype="<f4"),
             np.ones(128, dtype="<f4"),
             np.ones(64, dtype="<f4"),
             np.ones(16, dtype="<f4"),
             np.ones(1, dtype="<f4"),
         ),
-        activation_scales=np.ones(5, dtype="<f4"),
-        requant_multipliers=np.ones(208, dtype="<i4"),
-        requant_shifts=np.zeros(208, dtype="<i4"),
+        activation_scales=np.ones(7, dtype="<f4"),
+        requant_multipliers=np.ones(232, dtype="<i4"),
+        requant_shifts=np.zeros(232, dtype="<i4"),
     )
 
     features = np.zeros(FEATURE_COUNT, dtype=np.float32)

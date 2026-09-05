@@ -5,10 +5,8 @@
 評価対象の局面で全合法手を個別に採点し、最も高い評価値を持つ行動を選択します。対局シミュレーションには [cjong4](https://github.com/sh-lab/cjong4) を利用し、最終的な推論処理は Pure C で実装して WebAssembly（WASM）へ変換することを想定しています。
 
 > [!NOTE]
-> 現在のdataset/model形式は v1、特徴量スキーマは v2 です。
+> 現在のdataset container形式は v1、model形式は v2、特徴量スキーマは v3 です。
 > 各形式はバージョンで互換性を検証します。
-> 物理牌単位の入力と共有Tile Encoderを使用する[特徴量スキーマ v3](docs/feature-schema-v3.md)を
-> 次期形式として採用済みですが、まだ実装されていません。
 
 ## 目的
 
@@ -53,10 +51,15 @@ selected_action = argmax(scores)
 
 ## ニューラルネットワーク
 
-初期モデルには、WASM上でも高速に推論できる小型の全結合ネットワークを使用します。
+物理牌136枚を対応関係を保ったまま共有Tile Encoderへ通し、その出力と局面・
+合法手情報を小型の全結合ネットワークで評価します。
 
 ```text
-Input
+各物理牌 13
+  -> Dense 16 + ReLU
+  -> Dense 8  + ReLU（136牌で重み共有）
+
+136 x 8 + 局面33 + 合法手2 = 1123
   -> Dense 128 + ReLU
   -> Dense 64  + ReLU
   -> Dense 16  + ReLU
@@ -72,9 +75,9 @@ Input
 - 推論時の動的メモリ確保: なし
 - 行動選択: 全合法手の評価値の `argmax`
 
-### 次期v3モデル
+### v3モデル
 
-現在のv2は手牌、捨て牌、副露などを牌種別に集約している。次期v3ではcjong4の
+v3ではcjong4の
 `locations[136]` が持つ物理牌単位の対応を維持し、同じ重みのTile Encoderを
 136牌へ適用する。
 
@@ -98,7 +101,10 @@ Input
 最初に `float32` モデルを学習し、学習後量子化（PTQ）でC/WASM向けの整数モデルへ変換します。精度低下が大きい場合は、量子化対応学習（QAT）を使用します。
 
 ```text
-int8 Input
+各物理牌のint8 Input
+  -> INT8 Dense 16 + ReLU
+  -> INT8 Dense 8  + ReLU（共有）
+  -> concatenate + int8局面・合法手
   -> INT8 Dense 128 + ReLU
   -> INT8 Dense 64  + ReLU
   -> INT8 Dense 16  + ReLU
@@ -338,10 +344,11 @@ cmake --build build-wasm --parallel
 
 ## 形式仕様
 
-- [特徴量スキーマ v2](docs/feature-schema-v2.md)
-- [特徴量スキーマ v3（採用設計・未実装）](docs/feature-schema-v3.md)
+- [特徴量スキーマ v3](docs/feature-schema-v3.md)
+- [特徴量スキーマ v2（旧形式）](docs/feature-schema-v2.md)
 - [dataset形式 v1](docs/dataset-format-v1.md)
-- [model形式 v1](docs/model-format-v1.md)
+- [model形式 v2](docs/model-format-v2.md)
+- [model形式 v1（旧形式）](docs/model-format-v1.md)
 
 ## 今後の開発方針
 

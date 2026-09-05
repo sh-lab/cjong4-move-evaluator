@@ -28,8 +28,8 @@ validationでは常にゼロを返すbaselineを上回れなかった。この�
 | `riichi` | リーチ型 | リーチ可能時に積極的にリーチする |
 | `dama` | ダマ型 | リーチを控えダマテンを活用する |
 
-集約型のv2 INT8モデルは現在1個約184KBである。v3のサイズは新しいmodel形式の
-実装後に計測し、8種類の配布サイズを確定する。
+v3 model形式では1個あたりfloat32が614,460 bytes、INT8が157,484 bytesである。
+INT8モデル8種類の合計は約1.20 MiBとなる。
 
 ## 報酬設計
 
@@ -102,7 +102,7 @@ cjong4の合法手
 
 1. **完了:** 最良validation checkpointの保存とearly stoppingを追加する
 2. **設計完了:** 物理牌単位特徴量スキーマv3を文書化する
-3. v3の共有Tile Encoder、feature encoder、model/dataset形式を実装する
+3. **完了:** v3の共有Tile Encoder、feature encoder、model/dataset形式を実装する
 4. ゼロ報酬・非ゼロ報酬を分けた評価指標を追加する
 5. ゼロ報酬を決定的に間引く設定とサンプリング重みを追加する
 6. datasetへ個性報酬を再構成できる事実・イベントを追加する

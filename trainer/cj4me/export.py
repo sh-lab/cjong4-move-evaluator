@@ -11,39 +11,75 @@ from typing import Mapping, Sequence
 import numpy as np
 import torch
 
-from .dataset import DatasetV1, FEATURE_COUNT, FEATURE_SCHEMA_VERSION
-from .model import MODEL_DIMENSIONS, MoveEvaluator, checkpoint_metadata
+from .dataset import (
+    ACTION_FEATURE_COUNT,
+    FEATURE_SCHEMA_VERSION,
+    SCORE_INPUT_COUNT,
+    STATE_FEATURE_COUNT,
+    TILE_COUNT,
+    TILE_EMBEDDING_COUNT,
+    TILE_FEATURE_COUNT,
+    DatasetV1,
+)
+from .model import (
+    MODEL_HIDDEN1_COUNT,
+    MODEL_HIDDEN2_COUNT,
+    MODEL_HIDDEN3_COUNT,
+    MODEL_TILE_HIDDEN_COUNT,
+    MoveEvaluator,
+    checkpoint_metadata,
+)
 from .quantize import QuantizedModel, quantize_model, validate_quantized_model
 from .train import select_device
 
-MODEL_MAGIC = b"CJ4MEM01"
-MODEL_FORMAT_VERSION = 1
-MODEL_HEADER_SIZE = 64
-MODEL_LAYER_COUNT = 4
+MODEL_MAGIC = b"CJ4MEM02"
+MODEL_FORMAT_VERSION = 2
+MODEL_HEADER_SIZE = 88
+MODEL_LAYER_COUNT = 6
 MODEL_KIND_F32 = 1
 MODEL_KIND_I8 = 2
 TENSOR_F32 = 1
 TENSOR_I8 = 2
 TENSOR_I32 = 3
 
-_HEADER = struct.Struct("<8s10IQ2I")
+_HEADER = struct.Struct("<8s16IQ2I")
 _TENSOR_HEADER = struct.Struct("<4I")
 _STATE_LAYOUT = (
-    ("network.0.weight", (128, FEATURE_COUNT)),
-    ("network.0.bias", (128,)),
-    ("network.2.weight", (64, 128)),
-    ("network.2.bias", (64,)),
-    ("network.4.weight", (16, 64)),
-    ("network.4.bias", (16,)),
-    ("network.6.weight", (1, 16)),
-    ("network.6.bias", (1,)),
+    ("tile_encoder.0.weight", (MODEL_TILE_HIDDEN_COUNT, TILE_FEATURE_COUNT)),
+    ("tile_encoder.0.bias", (MODEL_TILE_HIDDEN_COUNT,)),
+    ("tile_encoder.2.weight", (TILE_EMBEDDING_COUNT, MODEL_TILE_HIDDEN_COUNT)),
+    ("tile_encoder.2.bias", (TILE_EMBEDDING_COUNT,)),
+    ("score_network.0.weight", (MODEL_HIDDEN1_COUNT, SCORE_INPUT_COUNT)),
+    ("score_network.0.bias", (MODEL_HIDDEN1_COUNT,)),
+    ("score_network.2.weight", (MODEL_HIDDEN2_COUNT, MODEL_HIDDEN1_COUNT)),
+    ("score_network.2.bias", (MODEL_HIDDEN2_COUNT,)),
+    ("score_network.4.weight", (MODEL_HIDDEN3_COUNT, MODEL_HIDDEN2_COUNT)),
+    ("score_network.4.bias", (MODEL_HIDDEN3_COUNT,)),
+    ("score_network.6.weight", (1, MODEL_HIDDEN3_COUNT)),
+    ("score_network.6.bias", (1,)),
+)
+_LAYER_INPUTS = (
+    TILE_FEATURE_COUNT,
+    MODEL_TILE_HIDDEN_COUNT,
+    SCORE_INPUT_COUNT,
+    MODEL_HIDDEN1_COUNT,
+    MODEL_HIDDEN2_COUNT,
+    MODEL_HIDDEN3_COUNT,
+)
+_LAYER_OUTPUTS = (
+    MODEL_TILE_HIDDEN_COUNT,
+    TILE_EMBEDDING_COUNT,
+    MODEL_HIDDEN1_COUNT,
+    MODEL_HIDDEN2_COUNT,
+    MODEL_HIDDEN3_COUNT,
+    1,
 )
 
-FLOAT_MODEL_SIZE = MODEL_HEADER_SIZE + len(_STATE_LAYOUT) * _TENSOR_HEADER.size + 4 * sum(
-    int(np.prod(shape)) for _, shape in _STATE_LAYOUT
+FLOAT_MODEL_SIZE = (
+    MODEL_HEADER_SIZE
+    + len(_STATE_LAYOUT) * _TENSOR_HEADER.size
+    + 4 * sum(int(np.prod(shape)) for _, shape in _STATE_LAYOUT)
 )
-_LAYER_INPUTS = MODEL_DIMENSIONS[:-1]
-_LAYER_OUTPUTS = MODEL_DIMENSIONS[1:]
 _I8_WEIGHT_COUNT = sum(
     input_count * output_count
     for input_count, output_count in zip(_LAYER_INPUTS, _LAYER_OUTPUTS)
@@ -52,10 +88,10 @@ _I8_CHANNEL_COUNT = sum(_LAYER_OUTPUTS)
 _I8_REQUANT_COUNT = sum(_LAYER_OUTPUTS[:-1])
 INT8_MODEL_SIZE = (
     MODEL_HEADER_SIZE
-    + 15 * _TENSOR_HEADER.size
+    + 21 * _TENSOR_HEADER.size
     + _I8_WEIGHT_COUNT
     + 8 * _I8_CHANNEL_COUNT
-    + 4 * len(MODEL_DIMENSIONS)
+    + 7 * 4
     + 8 * _I8_REQUANT_COUNT
 )
 
@@ -117,7 +153,8 @@ def _tensor_record(tensor_id: int, element_type: int, values: np.ndarray) -> byt
     else:
         raise ValueError(f"unsupported tensor type: {element_type}")
     count = np.asarray(values).size
-    return _TENSOR_HEADER.pack(tensor_id, element_type, count, count * element_size) + encoded
+    header = _TENSOR_HEADER.pack(tensor_id, element_type, count, count * element_size)
+    return header + encoded
 
 
 def _model_bytes(kind: int, records: Sequence[bytes]) -> bytes:
@@ -128,7 +165,17 @@ def _model_bytes(kind: int, records: Sequence[bytes]) -> bytes:
         FEATURE_SCHEMA_VERSION,
         kind,
         MODEL_LAYER_COUNT,
-        *MODEL_DIMENSIONS,
+        TILE_COUNT,
+        TILE_FEATURE_COUNT,
+        MODEL_TILE_HIDDEN_COUNT,
+        TILE_EMBEDDING_COUNT,
+        STATE_FEATURE_COUNT,
+        ACTION_FEATURE_COUNT,
+        SCORE_INPUT_COUNT,
+        MODEL_HIDDEN1_COUNT,
+        MODEL_HIDDEN2_COUNT,
+        MODEL_HIDDEN3_COUNT,
+        1,
         len(records),
         len(payload),
         MODEL_HEADER_SIZE,
@@ -141,8 +188,9 @@ def _model_bytes(kind: int, records: Sequence[bytes]) -> bytes:
 
 def serialize_float_model(model: MoveEvaluator) -> bytes:
     records = []
+    state = model.state_dict()
     for tensor_id, (name, shape) in enumerate(_STATE_LAYOUT, start=1):
-        tensor = model.state_dict()[name]
+        tensor = state[name]
         if (
             tuple(tensor.shape) != shape
             or tensor.dtype != torch.float32
@@ -150,11 +198,7 @@ def serialize_float_model(model: MoveEvaluator) -> bytes:
         ):
             raise ValueError(f"model tensor {name} is invalid")
         records.append(
-            _tensor_record(
-                tensor_id,
-                TENSOR_F32,
-                tensor.detach().cpu().numpy(),
-            )
+            _tensor_record(tensor_id, TENSOR_F32, tensor.detach().cpu().numpy())
         )
     result = _model_bytes(MODEL_KIND_F32, records)
     if len(result) != FLOAT_MODEL_SIZE:
@@ -175,9 +219,9 @@ def serialize_int8_model(model: QuantizedModel) -> bytes:
         tensor_id += 3
     records.extend(
         (
-            _tensor_record(113, TENSOR_F32, model.activation_scales),
-            _tensor_record(114, TENSOR_I32, model.requant_multipliers),
-            _tensor_record(115, TENSOR_I32, model.requant_shifts),
+            _tensor_record(119, TENSOR_F32, model.activation_scales),
+            _tensor_record(120, TENSOR_I32, model.requant_multipliers),
+            _tensor_record(121, TENSOR_I32, model.requant_shifts),
         )
     )
     result = _model_bytes(MODEL_KIND_I8, records)

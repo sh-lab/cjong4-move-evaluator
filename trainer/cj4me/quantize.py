@@ -1,16 +1,21 @@
-"""Post-training quantization for the fixed CJ4ME network."""
+"""Post-training quantization for the physical-tile CJ4ME network."""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from .dataset import FEATURE_COUNT, DatasetV1
+from .dataset import (
+    FEATURE_COUNT,
+    TILE_COUNT,
+    TILE_FEATURE_COUNT,
+    TILE_FEATURES_COUNT,
+    DatasetV1,
+)
 from .model import MoveEvaluator
 
 INT32_MIN = -(2**31)
@@ -48,7 +53,7 @@ def calibrate_activation_scales(
     batch_size: int = 1024,
     device: torch.device | str = "cpu",
 ) -> np.ndarray:
-    """Collect max-absolute input and hidden-ReLU scales."""
+    """Collect scales for tile input/hidden, score input, and score hidden layers."""
     if batch_size < 1:
         raise ValueError("calibration batch size must be at least 1")
     if len(dataset) == 0:
@@ -57,16 +62,31 @@ def calibrate_activation_scales(
     target_device = torch.device(device)
     model.to(target_device)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    maxima = np.zeros(4, dtype=np.float64)
+    maxima = np.zeros(6, dtype=np.float64)
     model.eval()
     with torch.no_grad():
         for features, _ in loader:
-            value = features.to(target_device)
-            maxima[0] = max(maxima[0], float(value.abs().max().item()))
-            for hidden_index, linear_index in enumerate((0, 2, 4), start=1):
-                value = torch.relu(model.network[linear_index](value))
-                maxima[hidden_index] = max(
-                    maxima[hidden_index], float(value.abs().max().item())
+            features = features.to(target_device)
+            tiles = features[..., :TILE_FEATURES_COUNT].reshape(
+                -1, TILE_COUNT, TILE_FEATURE_COUNT
+            )
+            maxima[0] = max(maxima[0], float(tiles.abs().max().item()))
+            tile_hidden = torch.relu(model.tile_encoder[0](tiles))
+            maxima[1] = max(maxima[1], float(tile_hidden.abs().max().item()))
+            tile_output = torch.relu(model.tile_encoder[2](tile_hidden))
+            score_input = torch.cat(
+                (
+                    tile_output.flatten(start_dim=-2),
+                    features[..., TILE_FEATURES_COUNT:],
+                ),
+                dim=-1,
+            )
+            maxima[2] = max(maxima[2], float(score_input.abs().max().item()))
+            value = score_input
+            for maximum_index, linear_index in enumerate((0, 2, 4), start=3):
+                value = torch.relu(model.score_network[linear_index](value))
+                maxima[maximum_index] = max(
+                    maxima[maximum_index], float(value.abs().max().item())
                 )
 
     return np.asarray([_positive_scale(value) for value in maxima], dtype="<f4")
@@ -105,10 +125,8 @@ def quantize_biases(bias: np.ndarray, accumulator_scales: np.ndarray) -> np.ndar
 
 
 def approximate_requant_ratio(ratio: float) -> tuple[int, int]:
-    """Approximate ratio as C's multiplier times two to negative shift."""
     if not math.isfinite(ratio) or ratio <= 0.0:
         raise ValueError("requantization ratio must be positive and finite")
-
     best: tuple[float, int, int] | None = None
     for shift in range(-62, 63):
         scaled = math.ldexp(ratio, shift)
@@ -118,8 +136,7 @@ def approximate_requant_ratio(ratio: float) -> tuple[int, int]:
         if multiplier < 1 or multiplier > INT32_MAX:
             continue
         approximation = math.ldexp(float(multiplier), -shift)
-        error = abs(approximation - ratio) / ratio
-        candidate = (error, -shift, multiplier)
+        candidate = (abs(approximation - ratio) / ratio, -shift, multiplier)
         if best is None or candidate < best:
             best = candidate
     if best is None:
@@ -140,8 +157,17 @@ def _check_accumulators(weight: np.ndarray, bias: np.ndarray) -> None:
         raise ValueError("worst-case int8 accumulation exceeds int32 range")
 
 
-def _float_parameters(model: MoveEvaluator) -> tuple[tuple[np.ndarray, np.ndarray], ...]:
-    layers = (model.network[0], model.network[2], model.network[4], model.network[6])
+def _float_parameters(
+    model: MoveEvaluator,
+) -> tuple[tuple[np.ndarray, np.ndarray], ...]:
+    layers = (
+        model.tile_encoder[0],
+        model.tile_encoder[2],
+        model.score_network[0],
+        model.score_network[2],
+        model.score_network[4],
+        model.score_network[6],
+    )
     result = []
     for layer in layers:
         weight = layer.weight.detach().cpu().numpy()
@@ -164,21 +190,18 @@ def quantize_model(
     batch_size: int = 1024,
     device: torch.device | str = "cpu",
 ) -> QuantizedModel:
-    """Calibrate and quantize a model into the C INT8 representation."""
-    hidden_scales = calibrate_activation_scales(
+    activation_inputs = calibrate_activation_scales(
         model, dataset, batch_size=batch_size, device=device
     )
     parameters = _float_parameters(model)
-
     weights = []
     biases = []
     weight_scales = []
     multipliers = []
     shifts = []
-    input_scales: Sequence[np.float32] = hidden_scales
 
     for layer_index, ((weight, bias), input_scale) in enumerate(
-        zip(parameters, input_scales)
+        zip(parameters, activation_inputs)
     ):
         quantized_weight, channel_scales = quantize_weight_channels(weight)
         accumulator_scales = np.asarray(
@@ -191,13 +214,12 @@ def quantize_model(
             raise ValueError("accumulator scale is not positive and finite")
         quantized_bias = quantize_biases(bias, accumulator_scales)
         _check_accumulators(quantized_weight, quantized_bias)
-
         weights.append(quantized_weight)
         biases.append(quantized_bias)
         weight_scales.append(channel_scales)
 
-        if layer_index < 3:
-            output_scale = hidden_scales[layer_index + 1]
+        if layer_index < 5:
+            output_scale = activation_inputs[layer_index + 1]
             for accumulator_scale in accumulator_scales:
                 multiplier, shift = approximate_requant_ratio(
                     float(accumulator_scale) / float(output_scale)
@@ -205,13 +227,12 @@ def quantize_model(
                 multipliers.append(multiplier)
                 shifts.append(shift)
 
-    output_scale = np.float32(hidden_scales[3] * weight_scales[3][0])
+    output_scale = np.float32(activation_inputs[5] * weight_scales[5][0])
     if not np.isfinite(output_scale) or output_scale <= 0.0:
         raise ValueError("output scale is not positive and finite")
     activation_scales = np.concatenate(
-        (hidden_scales, np.asarray([output_scale], dtype="<f4"))
+        (activation_inputs, np.asarray([output_scale], dtype="<f4"))
     ).astype("<f4", copy=False)
-
     return QuantizedModel(
         weights=tuple(weights),
         biases=tuple(biases),
@@ -223,18 +244,21 @@ def quantize_model(
 
 
 def validate_quantized_model(model: QuantizedModel) -> None:
-    """Validate all fixed shapes and invariants required by the C loader."""
-    weight_shapes = ((128, FEATURE_COUNT), (64, 128), (16, 64), (1, 16))
-    channel_shapes = ((128,), (64,), (16,), (1,))
+    weight_shapes = (
+        (16, 13),
+        (8, 16),
+        (128, 1123),
+        (64, 128),
+        (16, 64),
+        (1, 16),
+    )
+    channel_shapes = ((16,), (8,), (128,), (64,), (16,), (1,))
     if not isinstance(model, QuantizedModel):
         raise ValueError("expected a QuantizedModel")
-    if (
-        len(model.weights) != 4
-        or len(model.biases) != 4
-        or len(model.weight_scales) != 4
+    if not (
+        len(model.weights) == len(model.biases) == len(model.weight_scales) == 6
     ):
-        raise ValueError("quantized model must contain four layers")
-
+        raise ValueError("quantized model must contain six layers")
     for index, (weights, biases, scales, weight_shape, channel_shape) in enumerate(
         zip(
             model.weights,
@@ -258,27 +282,26 @@ def validate_quantized_model(model: QuantizedModel) -> None:
             raise ValueError(f"quantized layer {index} weight scales are invalid")
         _check_accumulators(weights, biases)
 
-    activation_scales = model.activation_scales
     if (
-        activation_scales.shape != (5,)
-        or activation_scales.dtype != np.dtype("<f4")
-        or not np.isfinite(activation_scales).all()
-        or np.any(activation_scales <= 0.0)
+        model.activation_scales.shape != (7,)
+        or model.activation_scales.dtype != np.dtype("<f4")
+        or not np.isfinite(model.activation_scales).all()
+        or np.any(model.activation_scales <= 0.0)
     ):
         raise ValueError("activation scales are invalid")
     expected_output_scale = np.float32(
-        activation_scales[3] * model.weight_scales[3][0]
+        model.activation_scales[5] * model.weight_scales[5][0]
     )
-    if activation_scales[4] != expected_output_scale:
+    if model.activation_scales[6] != expected_output_scale:
         raise ValueError("output scale does not match the final accumulator scale")
     if (
-        model.requant_multipliers.shape != (208,)
+        model.requant_multipliers.shape != (232,)
         or model.requant_multipliers.dtype != np.dtype("<i4")
         or np.any(model.requant_multipliers <= 0)
     ):
         raise ValueError("requant multipliers are invalid")
     if (
-        model.requant_shifts.shape != (208,)
+        model.requant_shifts.shape != (232,)
         or model.requant_shifts.dtype != np.dtype("<i4")
         or np.any(model.requant_shifts < -62)
         or np.any(model.requant_shifts > 62)
@@ -354,18 +377,40 @@ def _dense_reference(
 
 
 def infer_int8_reference(model: QuantizedModel, features: np.ndarray) -> np.int32:
-    """Run one feature vector through the scalar reference C INT8 path."""
     validate_quantized_model(model)
     features = np.asarray(features, dtype=np.float32)
     if features.shape != (FEATURE_COUNT,):
         raise ValueError(f"features must have shape ({FEATURE_COUNT},)")
 
-    values = [
-        _quantize_input_value(value, model.activation_scales[0])
-        for value in features
-    ]
+    tile_scale, _, score_input_scale = model.activation_scales[:3]
+    tile_features = features[:TILE_FEATURES_COUNT].reshape(
+        TILE_COUNT, TILE_FEATURE_COUNT
+    )
     requant_offset = 0
-    for layer_index in range(3):
+    tile_outputs: list[int] = []
+    for tile in tile_features:
+        values = [_quantize_input_value(value, tile_scale) for value in tile]
+        for layer_index in range(2):
+            output_count = model.weights[layer_index].shape[0]
+            values = _dense_reference(
+                values,
+                model.weights[layer_index],
+                model.biases[layer_index],
+                model.requant_multipliers[
+                    requant_offset : requant_offset + output_count
+                ],
+                model.requant_shifts[requant_offset : requant_offset + output_count],
+            )
+            requant_offset += output_count
+        tile_outputs.extend(values)
+        requant_offset = 0
+
+    values = tile_outputs + [
+        _quantize_input_value(value, score_input_scale)
+        for value in features[TILE_FEATURES_COUNT:]
+    ]
+    requant_offset = 16 + 8
+    for layer_index in range(2, 5):
         output_count = model.weights[layer_index].shape[0]
         values = _dense_reference(
             values,
@@ -377,12 +422,6 @@ def infer_int8_reference(model: QuantizedModel, features: np.ndarray) -> np.int3
             model.requant_shifts[requant_offset : requant_offset + output_count],
         )
         requant_offset += output_count
-
-    output = _dense_reference(
-        values,
-        model.weights[3],
-        model.biases[3],
-        None,
-        None,
-    )[0]
-    return np.int32(output)
+    return np.int32(
+        _dense_reference(values, model.weights[5], model.biases[5], None, None)[0]
+    )

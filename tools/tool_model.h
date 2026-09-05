@@ -26,7 +26,8 @@ static int cj4me_tool_detect_model_kind(const char *path,
   count = fread(header, 1u, sizeof(header), file);
   close_result = fclose(file);
   if (count != sizeof(header) || close_result != 0 ||
-      memcmp(header, "CJ4MEM01", 8u) != 0) {
+      memcmp(header, "CJ4MEM02", 8u) != 0 ||
+      cj4me_tool_read_u32_le(header + 8) != CJ4ME_MODEL_FORMAT_VERSION) {
     return 0;
   }
   *kind = (cj4me_model_kind)cj4me_tool_read_u32_le(header + 16);

@@ -7,12 +7,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const uint8_t MODEL_MAGIC[8] = {'C', 'J', '4', 'M', 'E', 'M', '0', '1'};
+static const uint8_t MODEL_MAGIC[8] = {'C', 'J', '4', 'M', 'E', 'M', '0', '2'};
 
 enum {
-  F32_TENSOR_COUNT = 8,
-  I8_TENSOR_COUNT = 15,
-  I8_ACTIVATION_SCALE_COUNT = 5
+  F32_TENSOR_COUNT = 12,
+  I8_TENSOR_COUNT = 21,
+  I8_ACTIVATION_SCALE_COUNT = 7
 };
 
 #define TENSOR_HEADER_SIZE 16u
@@ -67,15 +67,21 @@ static bool read_header(byte_reader *reader, const void *bytes, size_t length,
       read_u32_le(header + 12) != CJ4ME_FEATURE_SCHEMA_VERSION ||
       read_u32_le(header + 16) != (uint32_t)expected_kind ||
       read_u32_le(header + 20) != CJ4ME_MODEL_LAYER_COUNT ||
-      read_u32_le(header + 24) != CJ4ME_FEATURE_COUNT ||
-      read_u32_le(header + 28) != CJ4ME_MODEL_HIDDEN1_COUNT ||
-      read_u32_le(header + 32) != CJ4ME_MODEL_HIDDEN2_COUNT ||
-      read_u32_le(header + 36) != CJ4ME_MODEL_HIDDEN3_COUNT ||
-      read_u32_le(header + 40) != CJ4ME_MODEL_OUTPUT_COUNT ||
-      read_u32_le(header + 44) != expected_tensor_count ||
-      read_u64_le(header + 48) != (uint64_t)reader->remaining ||
-      read_u32_le(header + 56) != CJ4ME_MODEL_HEADER_SIZE ||
-      read_u32_le(header + 60) != 0u) {
+      read_u32_le(header + 24) != CJ4ME_TILE_COUNT ||
+      read_u32_le(header + 28) != CJ4ME_TILE_FEATURE_COUNT ||
+      read_u32_le(header + 32) != CJ4ME_MODEL_TILE_HIDDEN_COUNT ||
+      read_u32_le(header + 36) != CJ4ME_TILE_EMBEDDING_COUNT ||
+      read_u32_le(header + 40) != CJ4ME_FEATURE_STATE_COUNT ||
+      read_u32_le(header + 44) != CJ4ME_FEATURE_ACTION_COUNT ||
+      read_u32_le(header + 48) != CJ4ME_SCORE_INPUT_COUNT ||
+      read_u32_le(header + 52) != CJ4ME_MODEL_HIDDEN1_COUNT ||
+      read_u32_le(header + 56) != CJ4ME_MODEL_HIDDEN2_COUNT ||
+      read_u32_le(header + 60) != CJ4ME_MODEL_HIDDEN3_COUNT ||
+      read_u32_le(header + 64) != CJ4ME_MODEL_OUTPUT_COUNT ||
+      read_u32_le(header + 68) != expected_tensor_count ||
+      read_u64_le(header + 72) != (uint64_t)reader->remaining ||
+      read_u32_le(header + 80) != CJ4ME_MODEL_HEADER_SIZE ||
+      read_u32_le(header + 84) != 0u) {
     return false;
   }
   return true;
@@ -88,7 +94,7 @@ static bool read_tensor_header(byte_reader *reader, uint32_t expected_id,
   uint32_t element_size;
   uint64_t expected_bytes;
 
-  if (!take_bytes(reader, 16u, &header))
+  if (!take_bytes(reader, TENSOR_HEADER_SIZE, &header))
     return false;
   element_size = expected_type == CJ4ME_MODEL_TENSOR_I8 ? 1u : 4u;
   expected_bytes = (uint64_t)expected_count * element_size;
@@ -105,15 +111,13 @@ static bool read_f32_tensor(byte_reader *reader, uint32_t id, uint32_t count,
                             float *output, bool require_positive) {
   const uint8_t *data;
 
-  if (!read_tensor_header(reader, id, CJ4ME_MODEL_TENSOR_F32, count, &data)) {
+  if (!read_tensor_header(reader, id, CJ4ME_MODEL_TENSOR_F32, count, &data))
     return false;
-  }
   for (uint32_t i = 0; i < count; ++i) {
     uint32_t bits = read_u32_le(data + (size_t)i * 4u);
     memcpy(output + i, &bits, sizeof(bits));
-    if (!isfinite(output[i]) || (require_positive && output[i] <= 0.0f)) {
+    if (!isfinite(output[i]) || (require_positive && output[i] <= 0.0f))
       return false;
-    }
   }
   return true;
 }
@@ -122,9 +126,8 @@ static bool read_i32_tensor(byte_reader *reader, uint32_t id, uint32_t count,
                             int32_t *output) {
   const uint8_t *data;
 
-  if (!read_tensor_header(reader, id, CJ4ME_MODEL_TENSOR_I32, count, &data)) {
+  if (!read_tensor_header(reader, id, CJ4ME_MODEL_TENSOR_I32, count, &data))
     return false;
-  }
   for (uint32_t i = 0; i < count; ++i) {
     const uint32_t value = read_u32_le(data + (size_t)i * 4u);
     output[i] = value <= INT32_MAX ? (int32_t)value
@@ -137,14 +140,12 @@ static bool read_i8_tensor(byte_reader *reader, uint32_t id, uint32_t count,
                            int8_t *output) {
   const uint8_t *data;
 
-  if (!read_tensor_header(reader, id, CJ4ME_MODEL_TENSOR_I8, count, &data)) {
+  if (!read_tensor_header(reader, id, CJ4ME_MODEL_TENSOR_I8, count, &data))
     return false;
-  }
-  for (uint32_t i = 0; i < count; ++i) {
+  for (uint32_t i = 0; i < count; ++i)
     output[i] = data[i] <= INT8_MAX
                     ? (int8_t)data[i]
                     : (int8_t)(-(int16_t)(UINT8_MAX - data[i]) - 1);
-  }
   return true;
 }
 
@@ -171,16 +172,15 @@ static bool accumulators_fit_i32(const int8_t *weights, const int32_t *biases,
 
 static bool valid_requantization(const int32_t *multipliers,
                                  const int32_t *shifts, size_t count) {
-  for (size_t i = 0; i < count; ++i) {
+  for (size_t i = 0; i < count; ++i)
     if (multipliers[i] <= 0 || shifts[i] < -62 || shifts[i] > 62)
       return false;
-  }
   return true;
 }
 
-static bool valid_output_scale(float hidden3_scale, float weight_scale,
+static bool valid_output_scale(float hidden_scale, float weight_scale,
                                float output_scale) {
-  float expected = hidden3_scale * weight_scale;
+  float expected = hidden_scale * weight_scale;
   float difference;
   float reference;
 
@@ -194,7 +194,11 @@ static bool valid_output_scale(float hidden3_scale, float weight_scale,
 
 static size_t f32_file_size(void) {
   const size_t elements =
-      CJ4ME_MODEL_HIDDEN1_COUNT * CJ4ME_FEATURE_COUNT +
+      CJ4ME_MODEL_TILE_HIDDEN_COUNT * CJ4ME_TILE_FEATURE_COUNT +
+      CJ4ME_MODEL_TILE_HIDDEN_COUNT +
+      CJ4ME_TILE_EMBEDDING_COUNT * CJ4ME_MODEL_TILE_HIDDEN_COUNT +
+      CJ4ME_TILE_EMBEDDING_COUNT +
+      CJ4ME_MODEL_HIDDEN1_COUNT * CJ4ME_SCORE_INPUT_COUNT +
       CJ4ME_MODEL_HIDDEN1_COUNT +
       CJ4ME_MODEL_HIDDEN2_COUNT * CJ4ME_MODEL_HIDDEN1_COUNT +
       CJ4ME_MODEL_HIDDEN2_COUNT +
@@ -208,11 +212,14 @@ static size_t f32_file_size(void) {
 
 static size_t i8_file_size(void) {
   const size_t weight_elements =
-      CJ4ME_MODEL_HIDDEN1_COUNT * CJ4ME_FEATURE_COUNT +
+      CJ4ME_MODEL_TILE_HIDDEN_COUNT * CJ4ME_TILE_FEATURE_COUNT +
+      CJ4ME_TILE_EMBEDDING_COUNT * CJ4ME_MODEL_TILE_HIDDEN_COUNT +
+      CJ4ME_MODEL_HIDDEN1_COUNT * CJ4ME_SCORE_INPUT_COUNT +
       CJ4ME_MODEL_HIDDEN2_COUNT * CJ4ME_MODEL_HIDDEN1_COUNT +
       CJ4ME_MODEL_HIDDEN3_COUNT * CJ4ME_MODEL_HIDDEN2_COUNT +
       CJ4ME_MODEL_OUTPUT_COUNT * CJ4ME_MODEL_HIDDEN3_COUNT;
   const size_t channel_count =
+      CJ4ME_MODEL_TILE_HIDDEN_COUNT + CJ4ME_TILE_EMBEDDING_COUNT +
       CJ4ME_MODEL_HIDDEN1_COUNT + CJ4ME_MODEL_HIDDEN2_COUNT +
       CJ4ME_MODEL_HIDDEN3_COUNT + CJ4ME_MODEL_OUTPUT_COUNT;
   return CJ4ME_MODEL_HEADER_SIZE + I8_TENSOR_COUNT * TENSOR_HEADER_SIZE +
@@ -261,29 +268,42 @@ bool cj4me_model_f32_load_memory(cj4me_model_f32 *model, const void *bytes,
   if (!model)
     return false;
   memset(model, 0, sizeof(*model));
-  ok = read_header(&reader, bytes, length, CJ4ME_MODEL_KIND_F32,
-                   F32_TENSOR_COUNT) &&
-       read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_W1,
-                       CJ4ME_MODEL_HIDDEN1_COUNT * CJ4ME_FEATURE_COUNT,
-                       &model->weights1[0][0], false) &&
-       read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_B1,
-                       CJ4ME_MODEL_HIDDEN1_COUNT, model->biases1, false) &&
-       read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_W2,
-                       CJ4ME_MODEL_HIDDEN2_COUNT * CJ4ME_MODEL_HIDDEN1_COUNT,
-                       &model->weights2[0][0], false) &&
-       read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_B2,
-                       CJ4ME_MODEL_HIDDEN2_COUNT, model->biases2, false) &&
-       read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_W3,
-                       CJ4ME_MODEL_HIDDEN3_COUNT * CJ4ME_MODEL_HIDDEN2_COUNT,
-                       &model->weights3[0][0], false) &&
-       read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_B3,
-                       CJ4ME_MODEL_HIDDEN3_COUNT, model->biases3, false) &&
-       read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_W4,
-                       CJ4ME_MODEL_OUTPUT_COUNT * CJ4ME_MODEL_HIDDEN3_COUNT,
-                       &model->weights4[0][0], false) &&
-       read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_B4,
-                       CJ4ME_MODEL_OUTPUT_COUNT, model->biases4, false) &&
-       reader.remaining == 0u;
+  ok =
+      read_header(&reader, bytes, length, CJ4ME_MODEL_KIND_F32,
+                  F32_TENSOR_COUNT) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_TILE_W1,
+                      CJ4ME_MODEL_TILE_HIDDEN_COUNT * CJ4ME_TILE_FEATURE_COUNT,
+                      &model->tile_weights1[0][0], false) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_TILE_B1,
+                      CJ4ME_MODEL_TILE_HIDDEN_COUNT, model->tile_biases1,
+                      false) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_TILE_W2,
+                      CJ4ME_TILE_EMBEDDING_COUNT *
+                          CJ4ME_MODEL_TILE_HIDDEN_COUNT,
+                      &model->tile_weights2[0][0], false) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_TILE_B2,
+                      CJ4ME_TILE_EMBEDDING_COUNT, model->tile_biases2, false) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_SCORE_W1,
+                      CJ4ME_MODEL_HIDDEN1_COUNT * CJ4ME_SCORE_INPUT_COUNT,
+                      &model->score_weights1[0][0], false) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_SCORE_B1,
+                      CJ4ME_MODEL_HIDDEN1_COUNT, model->score_biases1, false) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_SCORE_W2,
+                      CJ4ME_MODEL_HIDDEN2_COUNT * CJ4ME_MODEL_HIDDEN1_COUNT,
+                      &model->score_weights2[0][0], false) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_SCORE_B2,
+                      CJ4ME_MODEL_HIDDEN2_COUNT, model->score_biases2, false) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_SCORE_W3,
+                      CJ4ME_MODEL_HIDDEN3_COUNT * CJ4ME_MODEL_HIDDEN2_COUNT,
+                      &model->score_weights3[0][0], false) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_SCORE_B3,
+                      CJ4ME_MODEL_HIDDEN3_COUNT, model->score_biases3, false) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_SCORE_W4,
+                      CJ4ME_MODEL_OUTPUT_COUNT * CJ4ME_MODEL_HIDDEN3_COUNT,
+                      &model->score_weights4[0][0], false) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_F32_SCORE_B4,
+                      CJ4ME_MODEL_OUTPUT_COUNT, model->score_biases4, false) &&
+      reader.remaining == 0u;
   if (!ok)
     memset(model, 0, sizeof(*model));
   return ok;
@@ -303,34 +323,54 @@ bool cj4me_model_i8_load_memory(cj4me_model_i8 *model, const void *bytes,
   ok =
       read_header(&reader, bytes, length, CJ4ME_MODEL_KIND_I8,
                   I8_TENSOR_COUNT) &&
-      read_i8_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_W1,
-                     CJ4ME_MODEL_HIDDEN1_COUNT * CJ4ME_FEATURE_COUNT,
-                     &model->weights1[0][0]) &&
-      read_i32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_B1,
-                      CJ4ME_MODEL_HIDDEN1_COUNT, model->biases1) &&
-      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_WS1,
-                      CJ4ME_MODEL_HIDDEN1_COUNT, model->weight_scales1, true) &&
-      read_i8_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_W2,
+      read_i8_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_TILE_W1,
+                     CJ4ME_MODEL_TILE_HIDDEN_COUNT * CJ4ME_TILE_FEATURE_COUNT,
+                     &model->tile_weights1[0][0]) &&
+      read_i32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_TILE_B1,
+                      CJ4ME_MODEL_TILE_HIDDEN_COUNT, model->tile_biases1) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_TILE_WS1,
+                      CJ4ME_MODEL_TILE_HIDDEN_COUNT, model->tile_weight_scales1,
+                      true) &&
+      read_i8_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_TILE_W2,
+                     CJ4ME_TILE_EMBEDDING_COUNT * CJ4ME_MODEL_TILE_HIDDEN_COUNT,
+                     &model->tile_weights2[0][0]) &&
+      read_i32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_TILE_B2,
+                      CJ4ME_TILE_EMBEDDING_COUNT, model->tile_biases2) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_TILE_WS2,
+                      CJ4ME_TILE_EMBEDDING_COUNT, model->tile_weight_scales2,
+                      true) &&
+      read_i8_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_SCORE_W1,
+                     CJ4ME_MODEL_HIDDEN1_COUNT * CJ4ME_SCORE_INPUT_COUNT,
+                     &model->score_weights1[0][0]) &&
+      read_i32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_SCORE_B1,
+                      CJ4ME_MODEL_HIDDEN1_COUNT, model->score_biases1) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_SCORE_WS1,
+                      CJ4ME_MODEL_HIDDEN1_COUNT, model->score_weight_scales1,
+                      true) &&
+      read_i8_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_SCORE_W2,
                      CJ4ME_MODEL_HIDDEN2_COUNT * CJ4ME_MODEL_HIDDEN1_COUNT,
-                     &model->weights2[0][0]) &&
-      read_i32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_B2,
-                      CJ4ME_MODEL_HIDDEN2_COUNT, model->biases2) &&
-      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_WS2,
-                      CJ4ME_MODEL_HIDDEN2_COUNT, model->weight_scales2, true) &&
-      read_i8_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_W3,
+                     &model->score_weights2[0][0]) &&
+      read_i32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_SCORE_B2,
+                      CJ4ME_MODEL_HIDDEN2_COUNT, model->score_biases2) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_SCORE_WS2,
+                      CJ4ME_MODEL_HIDDEN2_COUNT, model->score_weight_scales2,
+                      true) &&
+      read_i8_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_SCORE_W3,
                      CJ4ME_MODEL_HIDDEN3_COUNT * CJ4ME_MODEL_HIDDEN2_COUNT,
-                     &model->weights3[0][0]) &&
-      read_i32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_B3,
-                      CJ4ME_MODEL_HIDDEN3_COUNT, model->biases3) &&
-      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_WS3,
-                      CJ4ME_MODEL_HIDDEN3_COUNT, model->weight_scales3, true) &&
-      read_i8_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_W4,
+                     &model->score_weights3[0][0]) &&
+      read_i32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_SCORE_B3,
+                      CJ4ME_MODEL_HIDDEN3_COUNT, model->score_biases3) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_SCORE_WS3,
+                      CJ4ME_MODEL_HIDDEN3_COUNT, model->score_weight_scales3,
+                      true) &&
+      read_i8_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_SCORE_W4,
                      CJ4ME_MODEL_OUTPUT_COUNT * CJ4ME_MODEL_HIDDEN3_COUNT,
-                     &model->weights4[0][0]) &&
-      read_i32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_B4,
-                      CJ4ME_MODEL_OUTPUT_COUNT, model->biases4) &&
-      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_WS4,
-                      CJ4ME_MODEL_OUTPUT_COUNT, model->weight_scales4, true) &&
+                     &model->score_weights4[0][0]) &&
+      read_i32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_SCORE_B4,
+                      CJ4ME_MODEL_OUTPUT_COUNT, model->score_biases4) &&
+      read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_SCORE_WS4,
+                      CJ4ME_MODEL_OUTPUT_COUNT, model->score_weight_scales4,
+                      true) &&
       read_f32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_ACTIVATION_SCALES,
                       I8_ACTIVATION_SCALE_COUNT, activation_scales, true) &&
       read_i32_tensor(&reader, CJ4ME_MODEL_TENSOR_I8_REQUANT_MULTIPLIERS,
@@ -339,17 +379,24 @@ bool cj4me_model_i8_load_memory(cj4me_model_i8 *model, const void *bytes,
                       CJ4ME_MODEL_I8_REQUANT_COUNT, shifts) &&
       reader.remaining == 0u &&
       valid_requantization(multipliers, shifts, CJ4ME_MODEL_I8_REQUANT_COUNT) &&
-      valid_output_scale(activation_scales[3], model->weight_scales4[0],
-                         activation_scales[4]) &&
-      accumulators_fit_i32(&model->weights1[0][0], model->biases1,
-                           CJ4ME_FEATURE_COUNT, CJ4ME_MODEL_HIDDEN1_COUNT) &&
-      accumulators_fit_i32(&model->weights2[0][0], model->biases2,
+      valid_output_scale(activation_scales[5], model->score_weight_scales4[0],
+                         activation_scales[6]) &&
+      accumulators_fit_i32(&model->tile_weights1[0][0], model->tile_biases1,
+                           CJ4ME_TILE_FEATURE_COUNT,
+                           CJ4ME_MODEL_TILE_HIDDEN_COUNT) &&
+      accumulators_fit_i32(&model->tile_weights2[0][0], model->tile_biases2,
+                           CJ4ME_MODEL_TILE_HIDDEN_COUNT,
+                           CJ4ME_TILE_EMBEDDING_COUNT) &&
+      accumulators_fit_i32(&model->score_weights1[0][0], model->score_biases1,
+                           CJ4ME_SCORE_INPUT_COUNT,
+                           CJ4ME_MODEL_HIDDEN1_COUNT) &&
+      accumulators_fit_i32(&model->score_weights2[0][0], model->score_biases2,
                            CJ4ME_MODEL_HIDDEN1_COUNT,
                            CJ4ME_MODEL_HIDDEN2_COUNT) &&
-      accumulators_fit_i32(&model->weights3[0][0], model->biases3,
+      accumulators_fit_i32(&model->score_weights3[0][0], model->score_biases3,
                            CJ4ME_MODEL_HIDDEN2_COUNT,
                            CJ4ME_MODEL_HIDDEN3_COUNT) &&
-      accumulators_fit_i32(&model->weights4[0][0], model->biases4,
+      accumulators_fit_i32(&model->score_weights4[0][0], model->score_biases4,
                            CJ4ME_MODEL_HIDDEN3_COUNT, CJ4ME_MODEL_OUTPUT_COUNT);
 
   if (!ok) {
@@ -357,24 +404,39 @@ bool cj4me_model_i8_load_memory(cj4me_model_i8 *model, const void *bytes,
     return false;
   }
 
-  model->input_scale = activation_scales[0];
-  model->hidden1_scale = activation_scales[1];
-  model->hidden2_scale = activation_scales[2];
-  model->hidden3_scale = activation_scales[3];
-  model->output_scale = activation_scales[4];
-  memcpy(model->requant_multipliers1, multipliers,
-         sizeof(model->requant_multipliers1));
-  memcpy(model->requant_multipliers2, multipliers + CJ4ME_MODEL_HIDDEN1_COUNT,
-         sizeof(model->requant_multipliers2));
-  memcpy(model->requant_multipliers3,
-         multipliers + CJ4ME_MODEL_HIDDEN1_COUNT + CJ4ME_MODEL_HIDDEN2_COUNT,
-         sizeof(model->requant_multipliers3));
-  memcpy(model->requant_shifts1, shifts, sizeof(model->requant_shifts1));
-  memcpy(model->requant_shifts2, shifts + CJ4ME_MODEL_HIDDEN1_COUNT,
-         sizeof(model->requant_shifts2));
-  memcpy(model->requant_shifts3,
-         shifts + CJ4ME_MODEL_HIDDEN1_COUNT + CJ4ME_MODEL_HIDDEN2_COUNT,
-         sizeof(model->requant_shifts3));
+  model->tile_input_scale = activation_scales[0];
+  model->tile_hidden_scale = activation_scales[1];
+  model->score_input_scale = activation_scales[2];
+  model->hidden1_scale = activation_scales[3];
+  model->hidden2_scale = activation_scales[4];
+  model->hidden3_scale = activation_scales[5];
+  model->output_scale = activation_scales[6];
+
+  size_t offset = 0u;
+  memcpy(model->tile_requant_multipliers1, multipliers,
+         sizeof(model->tile_requant_multipliers1));
+  memcpy(model->tile_requant_shifts1, shifts,
+         sizeof(model->tile_requant_shifts1));
+  offset = CJ4ME_MODEL_TILE_HIDDEN_COUNT;
+  memcpy(model->tile_requant_multipliers2, multipliers + offset,
+         sizeof(model->tile_requant_multipliers2));
+  memcpy(model->tile_requant_shifts2, shifts + offset,
+         sizeof(model->tile_requant_shifts2));
+  offset += CJ4ME_TILE_EMBEDDING_COUNT;
+  memcpy(model->score_requant_multipliers1, multipliers + offset,
+         sizeof(model->score_requant_multipliers1));
+  memcpy(model->score_requant_shifts1, shifts + offset,
+         sizeof(model->score_requant_shifts1));
+  offset += CJ4ME_MODEL_HIDDEN1_COUNT;
+  memcpy(model->score_requant_multipliers2, multipliers + offset,
+         sizeof(model->score_requant_multipliers2));
+  memcpy(model->score_requant_shifts2, shifts + offset,
+         sizeof(model->score_requant_shifts2));
+  offset += CJ4ME_MODEL_HIDDEN2_COUNT;
+  memcpy(model->score_requant_multipliers3, multipliers + offset,
+         sizeof(model->score_requant_multipliers3));
+  memcpy(model->score_requant_shifts3, shifts + offset,
+         sizeof(model->score_requant_shifts3));
   return true;
 }
 
