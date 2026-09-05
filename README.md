@@ -325,6 +325,13 @@ trainerはvalidation lossが最良だったepochのcheckpointを保存します�
 `--patience` 回連続で改善しなければearly stoppingし、`0`を指定すると
 early stoppingを無効にします。`--min-delta`で改善とみなす最小値を指定できます。
 
+各epochでは全体MSEに加え、targetが厳密に0のレコードと非ゼロのレコードを
+分けて評価します。ゼロ群MSE、非ゼロ群MSE/MAE、非ゼロ報酬の符号正解率、
+常に0を返すbaselineからの改善率をtrain/validationの両方へ表示します。
+非ゼロレコードが存在しない場合、その指標は `N/A` と表示されます。最良epochの
+指標はcheckpointの `training_metrics_at_best` と
+`validation_metrics_at_best` にも保存されます。
+
 ## Emscripten
 
 CライブラリはOS固有API、スレッド、SIMDを要求しません。cjong4を同じ

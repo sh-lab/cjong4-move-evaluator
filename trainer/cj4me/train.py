@@ -6,7 +6,7 @@ import argparse
 import copy
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
 
@@ -58,6 +58,28 @@ class ValidationTracker:
         return new_best, should_stop
 
 
+@dataclass(frozen=True)
+class RewardMetrics:
+    """Regression metrics split by exactly-zero and nonzero rewards."""
+
+    records: int
+    zero_records: int
+    nonzero_records: int
+    mse: float
+    zero_mse: float | None
+    nonzero_mse: float | None
+    nonzero_mae: float | None
+    nonzero_sign_accuracy: float | None
+    zero_baseline_mse: float
+    baseline_improvement: float | None
+    nonzero_baseline_mse: float | None
+    nonzero_baseline_improvement: float | None
+
+    @property
+    def zero_ratio(self) -> float:
+        return self.zero_records / self.records
+
+
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -76,23 +98,127 @@ def select_device(requested: str) -> torch.device:
     return torch.device(requested)
 
 
-def mean_loss(
+def evaluate_reward_metrics(
     model: nn.Module,
     loader: DataLoader,
-    loss_function: nn.Module,
     device: torch.device,
-) -> float:
+) -> RewardMetrics:
     model.eval()
-    total_loss = 0.0
-    total_count = 0
+    records = 0
+    zero_records = 0
+    squared_error_sum = 0.0
+    zero_squared_error_sum = 0.0
+    nonzero_squared_error_sum = 0.0
+    nonzero_absolute_error_sum = 0.0
+    nonzero_baseline_squared_error_sum = 0.0
+    nonzero_sign_correct = 0
     with torch.no_grad():
         for features, targets in loader:
             features = features.to(device)
             targets = targets.to(device).unsqueeze(1)
-            loss = loss_function(model(features), targets)
-            total_loss += loss.item() * features.shape[0]
-            total_count += features.shape[0]
-    return total_loss / total_count
+            predictions = model(features)
+            if predictions.shape != targets.shape:
+                raise ValueError("model output shape does not match targets")
+            errors = predictions - targets
+            squared_errors = errors.square()
+            zero_mask = targets == 0.0
+            nonzero_mask = ~zero_mask
+
+            records += targets.numel()
+            zero_records += int(zero_mask.sum().item())
+            squared_error_sum += float(squared_errors.sum().item())
+            zero_squared_error_sum += float(squared_errors[zero_mask].sum().item())
+            nonzero_squared_error_sum += float(
+                squared_errors[nonzero_mask].sum().item()
+            )
+            nonzero_absolute_error_sum += float(
+                errors[nonzero_mask].abs().sum().item()
+            )
+            nonzero_baseline_squared_error_sum += float(
+                targets[nonzero_mask].square().sum().item()
+            )
+            nonzero_sign_correct += int(
+                ((predictions[nonzero_mask] * targets[nonzero_mask]) > 0.0)
+                .sum()
+                .item()
+            )
+
+    if records == 0:
+        raise ValueError("metrics dataset is empty")
+    if not all(
+        math.isfinite(value)
+        for value in (
+            squared_error_sum,
+            zero_squared_error_sum,
+            nonzero_squared_error_sum,
+            nonzero_absolute_error_sum,
+            nonzero_baseline_squared_error_sum,
+        )
+    ):
+        raise ValueError("reward metrics are not finite")
+    nonzero_records = records - zero_records
+    mse = squared_error_sum / records
+    zero_baseline_mse = nonzero_baseline_squared_error_sum / records
+    baseline_improvement = (
+        1.0 - mse / zero_baseline_mse if zero_baseline_mse > 0.0 else None
+    )
+    if nonzero_records:
+        nonzero_mse = nonzero_squared_error_sum / nonzero_records
+        nonzero_baseline_mse = (
+            nonzero_baseline_squared_error_sum / nonzero_records
+        )
+        nonzero_improvement = (
+            1.0 - nonzero_mse / nonzero_baseline_mse
+            if nonzero_baseline_mse > 0.0
+            else None
+        )
+        nonzero_mae = nonzero_absolute_error_sum / nonzero_records
+        sign_accuracy = nonzero_sign_correct / nonzero_records
+    else:
+        nonzero_mse = None
+        nonzero_baseline_mse = None
+        nonzero_improvement = None
+        nonzero_mae = None
+        sign_accuracy = None
+    return RewardMetrics(
+        records=records,
+        zero_records=zero_records,
+        nonzero_records=nonzero_records,
+        mse=mse,
+        zero_mse=(zero_squared_error_sum / zero_records if zero_records else None),
+        nonzero_mse=nonzero_mse,
+        nonzero_mae=nonzero_mae,
+        nonzero_sign_accuracy=sign_accuracy,
+        zero_baseline_mse=zero_baseline_mse,
+        baseline_improvement=baseline_improvement,
+        nonzero_baseline_mse=nonzero_baseline_mse,
+        nonzero_baseline_improvement=nonzero_improvement,
+    )
+
+
+def _format_optional(value: float | None, *, percent: bool = False) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.2%}" if percent else f"{value:.8f}"
+
+
+def format_reward_metrics(name: str, metrics: RewardMetrics) -> str:
+    return (
+        f"{name}_metrics records={metrics.records} zero={metrics.zero_ratio:.2%} "
+        f"mse={metrics.mse:.8f} "
+        f"zero_mse={_format_optional(metrics.zero_mse)} "
+        f"nonzero_mse={_format_optional(metrics.nonzero_mse)} "
+        f"nonzero_mae={_format_optional(metrics.nonzero_mae)} "
+        "nonzero_sign_accuracy="
+        f"{_format_optional(metrics.nonzero_sign_accuracy, percent=True)} "
+        f"zero_baseline_mse={metrics.zero_baseline_mse:.8f} "
+        "baseline_improvement="
+        f"{_format_optional(metrics.baseline_improvement, percent=True)} "
+        "nonzero_baseline_mse="
+        f"{_format_optional(metrics.nonzero_baseline_mse)} "
+        "nonzero_baseline_improvement="
+        f"{_format_optional(metrics.nonzero_baseline_improvement, percent=True)}"
+    )
 
 
 def train(args: argparse.Namespace) -> dict:
@@ -116,6 +242,11 @@ def train(args: argparse.Namespace) -> dict:
     )
     validation_loader = DataLoader(
         validation_set,
+        batch_size=args.batch_size,
+        shuffle=False,
+    )
+    training_metrics_loader = DataLoader(
+        training_set,
         batch_size=args.batch_size,
         shuffle=False,
     )
@@ -149,13 +280,21 @@ def train(args: argparse.Namespace) -> dict:
         training_loss = total_loss / total_count
         if not math.isfinite(training_loss):
             raise ValueError("training loss is not finite")
-        validation_loss = mean_loss(model, validation_loader, loss_function, device)
+        training_metrics = evaluate_reward_metrics(
+            model, training_metrics_loader, device
+        )
+        validation_metrics = evaluate_reward_metrics(
+            model, validation_loader, device
+        )
+        validation_loss = validation_metrics.mse
         improved, should_stop = tracker.update(validation_loss, epoch)
         print(
             f"epoch={epoch}/{args.epochs} "
             f"train_loss={training_loss:.8f} validation_loss={validation_loss:.8f}"
             f"{' best' if improved else ''}"
         )
+        print(format_reward_metrics("train", training_metrics))
+        print(format_reward_metrics("validation", validation_metrics))
         completed_epochs = epoch
         if improved:
             best_checkpoint = {
@@ -168,6 +307,8 @@ def train(args: argparse.Namespace) -> dict:
                 "epoch": epoch,
                 "best_validation_loss": validation_loss,
                 "training_loss_at_best": training_loss,
+                "training_metrics_at_best": asdict(training_metrics),
+                "validation_metrics_at_best": asdict(validation_metrics),
                 "seed": args.seed,
                 "training_records": len(training_set),
                 "validation_records": len(validation_set),
