@@ -6,6 +6,7 @@ import torch
 
 from cj4me.dataset import (
     DATASET_MAGIC,
+    DATASET_FORMAT_VERSION,
     DATASET_RECORD_SIZE,
     FEATURE_COUNT,
     FEATURE_SCHEMA_VERSION,
@@ -14,6 +15,7 @@ from cj4me.dataset import (
 from cj4me.export import (
     FLOAT_MODEL_SIZE,
     INT8_MODEL_SIZE,
+    MODEL_FORMAT_VERSION,
     MODEL_HEADER_SIZE,
     load_checkpoint,
     serialize_float_model,
@@ -54,8 +56,8 @@ def write_dataset(path, feature_rows):
             struct.pack(
                 "<8s6I",
                 DATASET_MAGIC,
+                DATASET_FORMAT_VERSION,
                 FEATURE_SCHEMA_VERSION,
-                1,
                 FEATURE_COUNT,
                 len(feature_rows),
                 DATASET_RECORD_SIZE,
@@ -83,8 +85,8 @@ def test_float_export_header_and_tensors_equal_state_dict():
     assert len(data) == FLOAT_MODEL_SIZE
     assert header == (
         b"CJ4MEM01",
+        MODEL_FORMAT_VERSION,
         FEATURE_SCHEMA_VERSION,
-        1,
         1,
         4,
         FEATURE_COUNT,
