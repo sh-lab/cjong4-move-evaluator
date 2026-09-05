@@ -5,7 +5,8 @@
 評価対象の局面で全合法手を個別に採点し、最も高い評価値を持つ行動を選択します。対局シミュレーションには [cjong4](https://github.com/sh-lab/cjong4) を利用し、最終的な推論処理は Pure C で実装して WebAssembly（WASM）へ変換することを想定しています。
 
 > [!NOTE]
-> 現在は初期設計段階です。API、特徴量形式、学習方法は実装と検証に伴って変更される可能性があります。
+> 現在のdataset/model形式は v1、特徴量スキーマは v2 です。
+> 各形式はバージョンで互換性を検証します。
 
 ## 目的
 
@@ -33,7 +34,7 @@
 (PlayerView, LegalAction) -> ActionValue
 ```
 
-NNへ渡す情報はプレイヤービューに含まれる情報だけに限定し、他家の手牌や山などの非公開情報は入力しません。
+NNへ渡す局面情報はプレイヤービューに含まれる情報だけに限定し、他家の手牌や山などの非公開情報は入力しません。赤牌の判定には対局開始時から公開されている `cj4_rules` も使用します。
 
 意思決定時には、同じプレイヤービューに対する全合法手を評価します。
 
@@ -92,7 +93,7 @@ int8 Input
 
 1. 現在のNNを使って自己対局する
 2. 学習対象の局面と合法手を記録する
-3. 合法手を探索し、局終了時の点数変化を行動価値として集計する
+3. 実際に選択した行動へ、局終了時の点数変化を行動価値として割り当てる
 4. 記録した `(PlayerView, LegalAction, ActionValue)` でNNを更新する
 5. 更新したNNで次世代の自己対局を生成する
 
@@ -102,7 +103,7 @@ int8 Input
 base_reward = (score_after_round - score_before_round) / reward_scale
 ```
 
-探索中は一定確率でランダムな合法手を選び、特定の行動だけに学習データが偏ることを防ぎます。また、過去世代のチェックポイントを対戦相手プールへ保存し、最新モデルだけに過適合しないようにします。
+探索中は一定確率でランダムな合法手を選び、特定の行動だけに学習データが偏ることを防ぎます。過去世代のチェックポイントを使う対戦相手プールは将来の拡張候補で、初回実装には含みません。
 
 ## 打ち筋の特徴づけ
 
@@ -154,10 +155,10 @@ C/WASM側では同じ推論エンジンを使用し、モデルの重みだけ�
 
 ```text
 models/
-  standard.weights
-  menzen.weights
-  call.weights
-  safe.weights
+  standard.cj4memodel
+  menzen.cj4memodel
+  call.cj4memodel
+  safe.cj4memodel
 ```
 
 重み形式と特徴量形式にはバージョンを持たせます。Cの構造体をそのままファイルへ保存せず、プラットフォームに依存しない固定形式へ変換します。
@@ -176,3 +177,148 @@ models/
 ```text
 PyTorch output ~= native C output ~= WASM output
 ```
+
+## 依存関係
+
+- CMake 3.16 以上
+- ISO C11 コンパイラ
+- cjong4 3.2.0 以上（3.x）
+- Python 3.10 以上
+- NumPy、PyTorch、pytest
+
+## ネイティブビルドとテスト
+
+開発時は sibling repository の cjong4 を指定できます。
+
+```sh
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCJONG4_SOURCE_DIR=../cjong4 \
+  -DCJ4ME_BUILD_TESTS=ON \
+  -DCJ4ME_BUILD_TOOLS=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+`CJONG4_SOURCE_DIR` を省略した場合は
+`find_package(cjong4 3.2.0 CONFIG REQUIRED)` を使用します。
+親プロジェクトがすでに `cjong4::cj4` を定義している場合は、そのtargetを
+再利用するため追加指定は不要です。
+
+## データ生成
+
+モデルを指定しない場合、ツモ・ロン以外を一様ランダムに選びます。
+
+```sh
+./build/cj4me_generate \
+  --games 100 \
+  --seed 1 \
+  --epsilon 1.0 \
+  --reward-scale 8000 \
+  --output samples.cj4medata
+
+./build/cj4me_generate \
+  --games 20 \
+  --seed 2 \
+  --epsilon 1.0 \
+  --reward-scale 8000 \
+  --output validation.cj4medata
+```
+
+量子化済みまたは float32 モデルを使用する場合は `--model` を追加し、
+`--epsilon` を `1.0` 未満にします。たとえば `--epsilon 0.1` では10%を
+ランダム探索し、残りをモデルのargmaxで選びます。`--epsilon 1.0` は
+モデル指定時も完全ランダム探索です。同じ seed、設定、モデルからは同じ
+dataset が生成されます。
+学習用と検証用は異なるseedで別々に生成してください。合法手が1つしかない
+局面と、必ず選択するツモ・ロンはdatasetへ記録しません。鳴きと競合する
+`PASS` は学習対象として記録します。
+
+## Cでのモデル読み込みと行動選択
+
+モデル本体は大きいため、setup時に一度だけ確保し、推論中は同じmodelと
+scratchを再利用します。
+
+```c
+#include <stdlib.h>
+
+#include <cjong4_move_evaluator/evaluator.h>
+#include <cjong4_move_evaluator/model.h>
+
+cj4me_model_i8 *model = malloc(sizeof(*model));
+cj4me_evaluator_context evaluator;
+cj4m_player_delegate delegate;
+cj4_rules rules = cj4_rules_default();
+
+if (!model ||
+    !cj4me_model_i8_load_file(model, "model-i8.cj4memodel") ||
+    !cj4me_evaluator_context_init(
+        &evaluator, CJ4ME_MODEL_KIND_I8, model, &rules))
+{
+    /* Handle setup failure. */
+}
+
+delegate.ctx = &evaluator;
+delegate.decide = cj4me_evaluator_decide;
+```
+
+WASMなどファイルシステムを前提にできない環境では
+`cj4me_model_i8_load_memory()` を使用します。adapter contextがmodelと
+scratchを保持するため、各推論では動的メモリ確保を行いません。
+`cj4m_step()` 後に `evaluator.failed` を確認し、trueの場合は対局処理を
+停止してください。
+
+## Python環境、学習、export
+
+```sh
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e trainer
+python -m pytest trainer/tests
+
+python -m cj4me.train \
+  --dataset samples.cj4medata \
+  --validation-dataset validation.cj4medata \
+  --epochs 10 \
+  --batch-size 1024 \
+  --seed 1 \
+  --output model.pt
+
+python -m cj4me.export \
+  --checkpoint model.pt \
+  --float-output model-f32.cj4memodel \
+  --int8-output model-i8.cj4memodel \
+  --calibration-dataset samples.cj4medata
+```
+
+## Emscripten
+
+CライブラリはOS固有API、スレッド、SIMDを要求しません。cjong4を同じ
+toolchainで構成してください。
+
+```sh
+emcmake cmake -S . -B build-wasm \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCJONG4_SOURCE_DIR=../cjong4 \
+  -DCJ4ME_BUILD_TESTS=OFF \
+  -DCJ4ME_BUILD_TOOLS=OFF
+cmake --build build-wasm --parallel
+```
+
+モデルはファイルシステムを前提にせず、メモリ上のbyte列から読み込めます。
+ネイティブとWASMで同じ特徴量生成・INT8推論コードを使用します。
+
+## 形式仕様
+
+- [特徴量スキーマ v2](docs/feature-schema-v2.md)
+- [dataset形式 v1](docs/dataset-format-v1.md)
+- [model形式 v1](docs/model-format-v1.md)
+
+## 初回実装の制限
+
+- 記録するのは実際に選択した行動の on-policy return だけです。
+- 未選択の合法手へ分岐する counterfactual rollout は未実装です。
+- 未知牌の再決定化は未実装です。
+- SIMD最適化は未実装で、C11のscalar参照実装を使用します。
+- 面前型・鳴き型・安全型のstyle rewardは差し替え境界だけを用意し、
+  初期報酬は局の点数差だけです。

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cj4me"
+version = "0.1.0"
+description = "PyTorch training tools for cjong4-move-evaluator"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "torch",
+    "pytest",
+]
+
+[project.scripts]
+cj4me-train = "cj4me.train:main"
+cj4me-export = "cj4me.export:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cj4me*"]

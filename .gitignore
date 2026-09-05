@@ -1,1 +1,15 @@
 .ai-work/
+build/
+build-*/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+dist/
+*.egg-info/
+*.cj4medata
+*.cj4memodel
+*.pt
+*.pth
