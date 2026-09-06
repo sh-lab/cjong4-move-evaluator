@@ -6,7 +6,7 @@
 #include <string.h>
 
 static const uint8_t DATASET_MAGIC[8] = {'C', 'J', '4', 'M',
-                                         'E', 'D', 'A', '1'};
+                                         'E', 'D', 'A', '2'};
 
 _Static_assert(sizeof(float) == 4u, "dataset format requires 32-bit float");
 _Static_assert(sizeof(cj4me_dataset_record) == CJ4ME_DATASET_RECORD_SIZE,
@@ -31,6 +31,19 @@ static uint16_t read_u16_le(const uint8_t in[2]) {
 static uint32_t read_u32_le(const uint8_t in[4]) {
   return (uint32_t)in[0] | ((uint32_t)in[1] << 8) | ((uint32_t)in[2] << 16) |
          ((uint32_t)in[3] << 24);
+}
+
+static void write_i32_le(uint8_t out[4], int32_t value) {
+  uint32_t bits;
+  memcpy(&bits, &value, sizeof(bits));
+  write_u32_le(out, bits);
+}
+
+static int32_t read_i32_le(const uint8_t in[4]) {
+  uint32_t bits = read_u32_le(in);
+  int32_t value;
+  memcpy(&value, &bits, sizeof(value));
+  return value;
 }
 
 static void encode_f32_le(uint8_t out[4], float value) {
@@ -82,13 +95,21 @@ bool cj4me_dataset_writer_open(cj4me_dataset_writer *writer, const char *path) {
 bool cj4me_dataset_writer_append(cj4me_dataset_writer *writer,
                                  const cj4me_dataset_record *record) {
   uint8_t bytes[CJ4ME_DATASET_RECORD_SIZE];
-  uint8_t metadata[4];
   size_t offset = 0u;
   if (!writer || !writer->file || writer->failed || !record ||
       writer->record_count == UINT32_MAX ||
       !record_count_fits_file_api(writer->record_count + 1u) ||
       !isfinite(record->target) || record->action_player >= CJ4_PLAYER_COUNT ||
-      record->action_type > CJ4_ACTION_PASS) {
+      record->action_type > CJ4_ACTION_PASS ||
+      record->decision_discard_count > CJ4_MAX_DISCARDS ||
+      record->round_discard_count > CJ4_MAX_DISCARDS ||
+      record->decision_discard_count > record->round_discard_count ||
+      record->discards_until_end !=
+          record->round_discard_count - record->decision_discard_count ||
+      record->round_end_type > CJ4_ROUND_END_ABORTIVE_DRAW ||
+      (record->available_call_mask & ~CJ4ME_CALL_AVAILABLE_MASK) != 0u ||
+      record->tenpai_status > CJ4ME_TENPAI_YES ||
+      (record->fact_flags & ~CJ4ME_FACT_FLAGS_MASK) != 0u) {
     return false;
   }
   for (size_t i = 0; i < CJ4ME_FEATURE_COUNT; ++i) {
@@ -99,10 +120,28 @@ bool cj4me_dataset_writer_append(cj4me_dataset_writer *writer,
   }
   encode_f32_le(bytes + offset, record->target);
   offset += 4u;
-  metadata[0] = record->action_player;
-  metadata[1] = record->action_type;
-  write_u16_le(metadata + 2, record->flags);
-  memcpy(bytes + offset, metadata, sizeof(metadata));
+  bytes[offset++] = record->action_player;
+  bytes[offset++] = record->action_type;
+  write_u16_le(bytes + offset, record->flags);
+  offset += 2u;
+  write_i32_le(bytes + offset, record->score_delta);
+  offset += 4u;
+  write_i32_le(bytes + offset, record->settlement_delta);
+  offset += 4u;
+  write_i32_le(bytes + offset, record->deal_in_points);
+  offset += 4u;
+  write_i32_le(bytes + offset, record->win_points);
+  offset += 4u;
+  bytes[offset++] = record->decision_discard_count;
+  bytes[offset++] = record->round_discard_count;
+  bytes[offset++] = record->discards_until_end;
+  bytes[offset++] = record->round_end_type;
+  bytes[offset++] = record->available_call_mask;
+  bytes[offset++] = record->tenpai_status;
+  write_u16_le(bytes + offset, record->fact_flags);
+  offset += 2u;
+  if (offset != sizeof(bytes))
+    return false;
   if (fwrite(bytes, 1u, sizeof(bytes), writer->file) != sizeof(bytes)) {
     writer->failed = true;
     return false;
@@ -170,7 +209,6 @@ bool cj4me_dataset_reader_open(cj4me_dataset_reader *reader, const char *path) {
 bool cj4me_dataset_reader_next(cj4me_dataset_reader *reader,
                                cj4me_dataset_record *record) {
   uint8_t bytes[CJ4ME_DATASET_RECORD_SIZE];
-  uint8_t metadata[4];
   size_t offset = 0u;
   if (!reader || !reader->file || !record ||
       reader->next_record >= reader->record_count) {
@@ -192,12 +230,37 @@ bool cj4me_dataset_reader_next(cj4me_dataset_reader *reader,
     return false;
   }
   offset += 4u;
-  memcpy(metadata, bytes + offset, sizeof(metadata));
-  record->action_player = metadata[0];
-  record->action_type = metadata[1];
-  record->flags = read_u16_le(metadata + 2);
+  record->action_player = bytes[offset++];
+  record->action_type = bytes[offset++];
+  record->flags = read_u16_le(bytes + offset);
+  offset += 2u;
+  record->score_delta = read_i32_le(bytes + offset);
+  offset += 4u;
+  record->settlement_delta = read_i32_le(bytes + offset);
+  offset += 4u;
+  record->deal_in_points = read_i32_le(bytes + offset);
+  offset += 4u;
+  record->win_points = read_i32_le(bytes + offset);
+  offset += 4u;
+  record->decision_discard_count = bytes[offset++];
+  record->round_discard_count = bytes[offset++];
+  record->discards_until_end = bytes[offset++];
+  record->round_end_type = bytes[offset++];
+  record->available_call_mask = bytes[offset++];
+  record->tenpai_status = bytes[offset++];
+  record->fact_flags = read_u16_le(bytes + offset);
+  offset += 2u;
   if (record->action_player >= CJ4_PLAYER_COUNT ||
-      record->action_type > CJ4_ACTION_PASS) {
+      record->action_type > CJ4_ACTION_PASS || offset != sizeof(bytes) ||
+      record->decision_discard_count > CJ4_MAX_DISCARDS ||
+      record->round_discard_count > CJ4_MAX_DISCARDS ||
+      record->decision_discard_count > record->round_discard_count ||
+      record->discards_until_end !=
+          record->round_discard_count - record->decision_discard_count ||
+      record->round_end_type > CJ4_ROUND_END_ABORTIVE_DRAW ||
+      (record->available_call_mask & ~CJ4ME_CALL_AVAILABLE_MASK) != 0u ||
+      record->tenpai_status > CJ4ME_TENPAI_YES ||
+      (record->fact_flags & ~CJ4ME_FACT_FLAGS_MASK) != 0u) {
     reader->failed = true;
     return false;
   }

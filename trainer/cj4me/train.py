@@ -15,7 +15,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 
-from .dataset import DatasetV1
+from .dataset import CJ4MEDataset
 from .model import MoveEvaluator, checkpoint_metadata
 
 
@@ -293,8 +293,8 @@ def format_reward_metrics(name: str, metrics: RewardMetrics) -> str:
 def train(args: argparse.Namespace) -> dict:
     seed_everything(args.seed)
     device = select_device(args.device)
-    training_set = DatasetV1(args.dataset)
-    validation_set = DatasetV1(args.validation_dataset)
+    training_set = CJ4MEDataset(args.dataset)
+    validation_set = CJ4MEDataset(args.validation_dataset)
     if Path(args.dataset).resolve() == Path(args.validation_dataset).resolve():
         raise ValueError("training and validation datasets must be different files")
     if len(training_set) == 0:

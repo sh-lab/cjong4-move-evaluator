@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -59,8 +60,40 @@ void test_rng(void) {
     assert(files_equal(path_a, path_b));
     {
       cj4me_dataset_reader reader;
+      cj4me_dataset_record record;
+      uint32_t records_read = 0u;
       assert(cj4me_dataset_reader_open(&reader, path_a));
       assert(reader.record_count > 0u);
+      while (cj4me_dataset_reader_next(&reader, &record)) {
+        const bool call_available = record.available_call_mask != 0u;
+        const bool chose_call = record.action_type == CJ4_ACTION_CHI ||
+                                record.action_type == CJ4_ACTION_PON ||
+                                record.action_type == CJ4_ACTION_MINKAN;
+        assert(record.round_end_type != CJ4_ROUND_END_NONE);
+        assert(fabsf(record.target - (float)record.score_delta / 8000.0f) <
+               0.000001f);
+        assert(((record.fact_flags & CJ4ME_FACT_CALL_AVAILABLE) != 0u) ==
+               call_available);
+        assert(((record.fact_flags & CJ4ME_FACT_CHOSE_CALL) != 0u) ==
+               chose_call);
+        if ((record.fact_flags & CJ4ME_FACT_OPENED_HAND) != 0u) {
+          assert((record.fact_flags & CJ4ME_FACT_WAS_MENZEN) != 0u);
+          assert(chose_call);
+        }
+        if ((record.fact_flags & CJ4ME_FACT_CHOSE_RIICHI) != 0u)
+          assert(record.action_type == CJ4_ACTION_RIICHI);
+        if ((record.fact_flags & CJ4ME_FACT_DEAL_IN_ACTION) != 0u) {
+          assert((record.fact_flags & CJ4ME_FACT_PLAYER_DEALT_IN) != 0u);
+          assert(record.round_end_type == CJ4_ROUND_END_RON);
+        }
+        if (record.round_end_type == CJ4_ROUND_END_EXHAUSTIVE_DRAW)
+          assert(record.tenpai_status != CJ4ME_TENPAI_UNKNOWN);
+        else
+          assert(record.tenpai_status == CJ4ME_TENPAI_UNKNOWN);
+        ++records_read;
+      }
+      assert(!reader.failed);
+      assert(records_read == reader.record_count);
       cj4me_dataset_reader_close(&reader);
     }
     assert(remove(path_a) == 0);

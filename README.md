@@ -211,7 +211,7 @@ PyTorch output ~= native C output ~= WASM output
 
 - CMake 3.16 以上
 - ISO C11 コンパイラ
-- cjong4 3.2.0 以上（3.x）
+- cjong4 3.3.0 以上（3.x）
 - Python 3.10 以上
 - NumPy、PyTorch、pytest
 
@@ -230,7 +230,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 `CJONG4_SOURCE_DIR` を省略した場合は
-`find_package(cjong4 3.2.0 CONFIG REQUIRED)` を使用します。
+`find_package(cjong4 3.3.0 CONFIG REQUIRED)` を使用します。
 親プロジェクトがすでに `cjong4::cj4` を定義している場合は、そのtargetを
 再利用するため追加指定は不要です。
 
@@ -366,7 +366,8 @@ cmake --build build-wasm --parallel
 
 - [特徴量スキーマ v3](docs/feature-schema-v3.md)
 - [特徴量スキーマ v2（旧形式）](docs/feature-schema-v2.md)
-- [dataset形式 v1](docs/dataset-format-v1.md)
+- [dataset形式 v2](docs/dataset-format-v2.md)
+- [dataset形式 v1（旧形式）](docs/dataset-format-v1.md)
 - [model形式 v2](docs/model-format-v2.md)
 - [model形式 v1（旧形式）](docs/model-format-v1.md)
 
@@ -380,5 +381,5 @@ cmake --build build-wasm --parallel
 - 未選択の合法手へ分岐する counterfactual rollout は未実装です。
 - 未知牌の再決定化は未実装です。
 - SIMD最適化は未実装で、C11のscalar参照実装を使用します。
-- 面前型・鳴き型・安全型のstyle rewardは差し替え境界だけを用意し、
-  初期報酬は局の点数差だけです。
+- dataset v2は個性報酬を再構成する教師用事実を保持しますが、事実から
+  8種類の報酬を合成するtrainer側のプリセットは未実装です。

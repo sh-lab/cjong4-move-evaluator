@@ -7,17 +7,39 @@ import torch
 from cj4me.dataset import (
     DATASET_HEADER_SIZE,
     DATASET_MAGIC,
+    DATASET_FORMAT_VERSION,
     DATASET_RECORD_SIZE,
     FEATURE_COUNT,
     FEATURE_SCHEMA_VERSION,
     DatasetV1,
+    DatasetV2,
 )
+
+
+def write_facts(stream, facts=None):
+    facts = facts or {}
+    stream.write(
+        struct.pack(
+            "<4i6BH",
+            facts.get("score_delta", 0),
+            facts.get("settlement_delta", 0),
+            facts.get("deal_in_points", 0),
+            facts.get("win_points", 0),
+            facts.get("decision_discard_count", 0),
+            facts.get("round_discard_count", 0),
+            facts.get("discards_until_end", 0),
+            facts.get("round_end_type", 0),
+            facts.get("available_call_mask", 0),
+            facts.get("tenpai_status", 0),
+            facts.get("fact_flags", 0),
+        )
+    )
 
 
 def write_dataset(path, records=(), **header_overrides):
     values = {
         "magic": DATASET_MAGIC,
-        "format_version": 1,
+        "format_version": DATASET_FORMAT_VERSION,
         "schema_version": FEATURE_SCHEMA_VERSION,
         "feature_count": FEATURE_COUNT,
         "record_count": len(records),
@@ -37,17 +59,31 @@ def write_dataset(path, records=(), **header_overrides):
     )
     with path.open("wb") as stream:
         stream.write(header)
-        for features, target, player, action_type, flags in records:
+        for record in records:
+            features, target, player, action_type, flags = record[:5]
+            facts = record[5] if len(record) == 6 else None
             stream.write(np.asarray(features, dtype="<f4").tobytes())
             stream.write(struct.pack("<fBBH", target, player, action_type, flags))
+            write_facts(stream, facts)
 
 
 def test_reads_records_with_numpy_and_torch_access(tmp_path):
     path = tmp_path / "valid.cj4medata"
     features = np.arange(FEATURE_COUNT, dtype=np.float32) / 10
-    write_dataset(path, [(features, 1.25, 2, 7, 3)])
+    facts = {
+        "score_delta": 12000,
+        "settlement_delta": 13000,
+        "win_points": 13000,
+        "decision_discard_count": 12,
+        "round_discard_count": 20,
+        "discards_until_end": 8,
+        "round_end_type": 1,
+        "tenpai_status": 2,
+        "fact_flags": 65,
+    }
+    write_dataset(path, [(features, 1.25, 2, 7, 3, facts)])
 
-    dataset = DatasetV1(path)
+    dataset = DatasetV2(path)
 
     assert len(dataset) == 1
     assert isinstance(dataset.records, np.memmap)
@@ -63,6 +99,16 @@ def test_reads_records_with_numpy_and_torch_access(tmp_path):
     assert tensor_features.dtype == torch.float32
     assert tensor_target.shape == ()
     assert tensor_target.item() == pytest.approx(1.25)
+    assert dataset.score_deltas[0] == 12000
+    assert dataset.settlement_deltas[0] == 13000
+    assert dataset.win_points[0] == 13000
+    assert dataset.decision_discard_counts[0] == 12
+    assert dataset.round_discard_counts[0] == 20
+    assert dataset.discards_until_end[0] == 8
+    assert dataset.round_end_types[0] == 1
+    assert dataset.tenpai_statuses[0] == 2
+    assert dataset.fact_flags[0] == 65
+    assert DatasetV1 is DatasetV2
 
 
 def test_empty_dataset_is_valid(tmp_path):
@@ -77,7 +123,7 @@ def test_empty_dataset_is_valid(tmp_path):
     ("field", "value", "message"),
     [
         ("magic", b"BADMAGIC", "magic"),
-        ("format_version", 2, "format version"),
+        ("format_version", DATASET_FORMAT_VERSION + 1, "format version"),
         ("schema_version", FEATURE_SCHEMA_VERSION + 1, "schema version"),
         ("feature_count", FEATURE_COUNT + 1, "feature count"),
         ("record_size", DATASET_RECORD_SIZE + 1, "record size"),
@@ -133,3 +179,32 @@ def test_rejects_invalid_action_metadata(tmp_path, player, action_type, message)
     write_dataset(path, [(features, 0.0, player, action_type, 0)])
     with pytest.raises(ValueError, match=message):
         DatasetV1(path)
+
+
+@pytest.mark.parametrize(
+    ("facts", "message"),
+    [
+        (
+            {"decision_discard_count": 2, "round_discard_count": 1},
+            "decision after",
+        ),
+        (
+            {
+                "decision_discard_count": 1,
+                "round_discard_count": 2,
+                "discards_until_end": 0,
+            },
+            "discard distance",
+        ),
+        ({"round_end_type": 5}, "round end type"),
+        ({"available_call_mask": 8}, "call mask"),
+        ({"tenpai_status": 3}, "tenpai status"),
+        ({"fact_flags": 1 << 9}, "fact flags"),
+    ],
+)
+def test_rejects_invalid_teacher_facts(tmp_path, facts, message):
+    path = tmp_path / "invalid-facts.cj4medata"
+    features = np.zeros(FEATURE_COUNT, dtype=np.float32)
+    write_dataset(path, [(features, 0.0, 0, 0, 0, facts)])
+    with pytest.raises(ValueError, match=message):
+        DatasetV2(path)

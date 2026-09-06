@@ -2,6 +2,6 @@
 
 include(CMakeFindDependencyMacro)
 if(NOT TARGET cjong4::cj4)
-    find_dependency(cjong4 3.2.0 CONFIG)
+    find_dependency(cjong4 3.3.0 CONFIG)
 endif()
 include("${CMAKE_CURRENT_LIST_DIR}/cjong4MoveEvaluatorTargets.cmake")

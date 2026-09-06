@@ -41,6 +41,7 @@ def write_dataset(path):
         )
         stream.write(np.zeros(FEATURE_COUNT, dtype="<f4").tobytes())
         stream.write(struct.pack("<fBBH", 0.0, 0, 0, 0))
+        stream.write(b"\0" * 24)
 
 
 def test_validation_tracker_uses_min_delta_and_patience():

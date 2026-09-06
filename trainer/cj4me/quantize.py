@@ -14,7 +14,7 @@ from .dataset import (
     TILE_COUNT,
     TILE_FEATURE_COUNT,
     TILE_FEATURES_COUNT,
-    DatasetV1,
+    CJ4MEDataset,
 )
 from .model import MoveEvaluator
 
@@ -48,7 +48,7 @@ def _positive_scale(maximum: float) -> np.float32:
 
 def calibrate_activation_scales(
     model: MoveEvaluator,
-    dataset: DatasetV1,
+    dataset: CJ4MEDataset,
     *,
     batch_size: int = 1024,
     device: torch.device | str = "cpu",
@@ -185,7 +185,7 @@ def _float_parameters(
 
 def quantize_model(
     model: MoveEvaluator,
-    dataset: DatasetV1,
+    dataset: CJ4MEDataset,
     *,
     batch_size: int = 1024,
     device: torch.device | str = "cpu",

@@ -17,7 +17,7 @@ if(NOT TARGET cjong4::cj4)
         set(BUILD_TESTS OFF)
         add_subdirectory("${CJONG4_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/cjong4")
     else()
-        find_package(cjong4 3.2.0 CONFIG REQUIRED)
+        find_package(cjong4 3.3.0 CONFIG REQUIRED)
     endif()
 endif()
 

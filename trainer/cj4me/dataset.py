@@ -1,4 +1,4 @@
-"""Reader and PyTorch dataset for the CJ4ME dataset v1 container format."""
+"""Reader and PyTorch dataset for the CJ4ME dataset v2 container format."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-DATASET_MAGIC = b"CJ4MEDA1"
-DATASET_FORMAT_VERSION = 1
+DATASET_MAGIC = b"CJ4MEDA2"
+DATASET_FORMAT_VERSION = 2
 FEATURE_SCHEMA_VERSION = 3
 TILE_COUNT = 136
 TILE_FEATURE_COUNT = 13
@@ -25,7 +25,32 @@ CONTEXT_FEATURE_COUNT = STATE_FEATURE_COUNT + ACTION_FEATURE_COUNT
 FEATURE_COUNT = TILE_FEATURES_COUNT + CONTEXT_FEATURE_COUNT
 SCORE_INPUT_COUNT = TILE_COUNT * TILE_EMBEDDING_COUNT + CONTEXT_FEATURE_COUNT
 DATASET_HEADER_SIZE = 32
-DATASET_RECORD_SIZE = FEATURE_COUNT * 4 + 8
+DATASET_RECORD_SIZE = FEATURE_COUNT * 4 + 32
+MAX_DISCARDS = 86
+CALL_AVAILABLE_CHI = 1 << 0
+CALL_AVAILABLE_PON = 1 << 1
+CALL_AVAILABLE_MINKAN = 1 << 2
+CALL_AVAILABLE_MASK = (
+    CALL_AVAILABLE_CHI | CALL_AVAILABLE_PON | CALL_AVAILABLE_MINKAN
+)
+ROUND_END_NONE = 0
+ROUND_END_TSUMO = 1
+ROUND_END_RON = 2
+ROUND_END_EXHAUSTIVE_DRAW = 3
+ROUND_END_ABORTIVE_DRAW = 4
+TENPAI_UNKNOWN = 0
+TENPAI_NO = 1
+TENPAI_YES = 2
+FACT_WAS_MENZEN = 1 << 0
+FACT_OPENED_HAND = 1 << 1
+FACT_CALL_AVAILABLE = 1 << 2
+FACT_CHOSE_CALL = 1 << 3
+FACT_RIICHI_AVAILABLE = 1 << 4
+FACT_CHOSE_RIICHI = 1 << 5
+FACT_PLAYER_WON = 1 << 6
+FACT_PLAYER_DEALT_IN = 1 << 7
+FACT_DEAL_IN_ACTION = 1 << 8
+FACT_FLAGS_MASK = (1 << 9) - 1
 
 _HEADER = struct.Struct("<8s6I")
 RECORD_DTYPE = np.dtype(
@@ -35,12 +60,23 @@ RECORD_DTYPE = np.dtype(
         ("action_player", "u1"),
         ("action_type", "u1"),
         ("flags", "<u2"),
+        ("score_delta", "<i4"),
+        ("settlement_delta", "<i4"),
+        ("deal_in_points", "<i4"),
+        ("win_points", "<i4"),
+        ("decision_discard_count", "u1"),
+        ("round_discard_count", "u1"),
+        ("discards_until_end", "u1"),
+        ("round_end_type", "u1"),
+        ("available_call_mask", "u1"),
+        ("tenpai_status", "u1"),
+        ("fact_flags", "<u2"),
     ],
     align=False,
 )
 
 if RECORD_DTYPE.itemsize != DATASET_RECORD_SIZE:
-    raise RuntimeError("dataset record dtype does not match the v1 format")
+    raise RuntimeError("dataset record dtype does not match the v2 format")
 
 
 @dataclass(frozen=True)
@@ -104,7 +140,7 @@ def _read_header(path: Path) -> DatasetHeader:
     )
 
 
-class DatasetV1(Dataset[tuple[torch.Tensor, torch.Tensor]]):
+class DatasetV2(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     """Memory-mapped dataset that returns ``(features, target)`` tensors."""
 
     def __init__(self, path: str | os.PathLike[str], *, validate_finite: bool = True):
@@ -130,6 +166,27 @@ class DatasetV1(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             raise ValueError("dataset contains an invalid action player")
         if np.any(self.action_types > 10):
             raise ValueError("dataset contains an invalid action type")
+        if np.any(self.decision_discard_counts > MAX_DISCARDS):
+            raise ValueError("dataset contains an invalid decision discard count")
+        if np.any(self.round_discard_counts > MAX_DISCARDS):
+            raise ValueError("dataset contains an invalid round discard count")
+        if np.any(self.decision_discard_counts > self.round_discard_counts):
+            raise ValueError("dataset contains a decision after the round end")
+        if np.any(
+            self.discards_until_end
+            != self.round_discard_counts - self.decision_discard_counts
+        ):
+            raise ValueError("dataset contains an inconsistent discard distance")
+        if np.any(self.round_end_types > ROUND_END_ABORTIVE_DRAW):
+            raise ValueError("dataset contains an invalid round end type")
+        if np.any(
+            self.available_call_masks & np.uint8(0xFF ^ CALL_AVAILABLE_MASK)
+        ):
+            raise ValueError("dataset contains an invalid available call mask")
+        if np.any(self.tenpai_statuses > TENPAI_YES):
+            raise ValueError("dataset contains an invalid tenpai status")
+        if np.any(self.fact_flags & np.uint16(0xFFFF ^ FACT_FLAGS_MASK)):
+            raise ValueError("dataset contains invalid fact flags")
 
     def __len__(self) -> int:
         return self.header.record_count
@@ -160,6 +217,50 @@ class DatasetV1(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     def flags(self) -> np.ndarray:
         return self.records["flags"]
 
+    @property
+    def score_deltas(self) -> np.ndarray:
+        return self.records["score_delta"]
+
+    @property
+    def settlement_deltas(self) -> np.ndarray:
+        return self.records["settlement_delta"]
+
+    @property
+    def deal_in_points(self) -> np.ndarray:
+        return self.records["deal_in_points"]
+
+    @property
+    def win_points(self) -> np.ndarray:
+        return self.records["win_points"]
+
+    @property
+    def decision_discard_counts(self) -> np.ndarray:
+        return self.records["decision_discard_count"]
+
+    @property
+    def round_discard_counts(self) -> np.ndarray:
+        return self.records["round_discard_count"]
+
+    @property
+    def discards_until_end(self) -> np.ndarray:
+        return self.records["discards_until_end"]
+
+    @property
+    def round_end_types(self) -> np.ndarray:
+        return self.records["round_end_type"]
+
+    @property
+    def available_call_masks(self) -> np.ndarray:
+        return self.records["available_call_mask"]
+
+    @property
+    def tenpai_statuses(self) -> np.ndarray:
+        return self.records["tenpai_status"]
+
+    @property
+    def fact_flags(self) -> np.ndarray:
+        return self.records["fact_flags"]
+
     def numpy_records(self) -> np.ndarray:
         """Return the structured memory-mapped record array."""
         return self.records
@@ -169,11 +270,15 @@ class DatasetV1(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             yield self[index]
 
 
-CJ4MEDataset = DatasetV1
+CJ4MEDataset = DatasetV2
+
+# Compatibility name for existing training scripts. It opens only the current
+# v2 container and is not a legacy v1 reader.
+DatasetV1 = DatasetV2
 
 
 def read_dataset(
     path: str | os.PathLike[str], *, validate_finite: bool = True
-) -> DatasetV1:
-    """Open a dataset v1 file using memory-mapped record access."""
-    return DatasetV1(path, validate_finite=validate_finite)
+) -> DatasetV2:
+    """Open a dataset v2 file using memory-mapped record access."""
+    return DatasetV2(path, validate_finite=validate_finite)

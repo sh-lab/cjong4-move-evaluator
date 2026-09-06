@@ -11,9 +11,37 @@
 extern "C" {
 #endif
 
-#define CJ4ME_DATASET_FORMAT_VERSION 1u
+#define CJ4ME_DATASET_FORMAT_VERSION 2u
 #define CJ4ME_DATASET_HEADER_SIZE 32u
-#define CJ4ME_DATASET_RECORD_SIZE ((uint32_t)(CJ4ME_FEATURE_COUNT * 4u + 8u))
+#define CJ4ME_DATASET_RECORD_SIZE ((uint32_t)(CJ4ME_FEATURE_COUNT * 4u + 32u))
+
+enum {
+  CJ4ME_CALL_AVAILABLE_CHI = 1u << 0,
+  CJ4ME_CALL_AVAILABLE_PON = 1u << 1,
+  CJ4ME_CALL_AVAILABLE_MINKAN = 1u << 2,
+  CJ4ME_CALL_AVAILABLE_MASK = CJ4ME_CALL_AVAILABLE_CHI |
+                              CJ4ME_CALL_AVAILABLE_PON |
+                              CJ4ME_CALL_AVAILABLE_MINKAN
+};
+
+typedef enum {
+  CJ4ME_TENPAI_UNKNOWN = 0,
+  CJ4ME_TENPAI_NO = 1,
+  CJ4ME_TENPAI_YES = 2
+} cj4me_tenpai_status;
+
+enum {
+  CJ4ME_FACT_WAS_MENZEN = 1u << 0,
+  CJ4ME_FACT_OPENED_HAND = 1u << 1,
+  CJ4ME_FACT_CALL_AVAILABLE = 1u << 2,
+  CJ4ME_FACT_CHOSE_CALL = 1u << 3,
+  CJ4ME_FACT_RIICHI_AVAILABLE = 1u << 4,
+  CJ4ME_FACT_CHOSE_RIICHI = 1u << 5,
+  CJ4ME_FACT_PLAYER_WON = 1u << 6,
+  CJ4ME_FACT_PLAYER_DEALT_IN = 1u << 7,
+  CJ4ME_FACT_DEAL_IN_ACTION = 1u << 8,
+  CJ4ME_FACT_FLAGS_MASK = (1u << 9) - 1u
+};
 
 typedef struct {
   float features[CJ4ME_FEATURE_COUNT];
@@ -21,6 +49,17 @@ typedef struct {
   uint8_t action_player;
   uint8_t action_type;
   uint16_t flags;
+  int32_t score_delta;
+  int32_t settlement_delta;
+  int32_t deal_in_points;
+  int32_t win_points;
+  uint8_t decision_discard_count;
+  uint8_t round_discard_count;
+  uint8_t discards_until_end;
+  uint8_t round_end_type;
+  uint8_t available_call_mask;
+  uint8_t tenpai_status;
+  uint16_t fact_flags;
 } cj4me_dataset_record;
 
 typedef struct {

@@ -19,7 +19,7 @@ from .dataset import (
     TILE_COUNT,
     TILE_EMBEDDING_COUNT,
     TILE_FEATURE_COUNT,
-    DatasetV1,
+    CJ4MEDataset,
 )
 from .model import (
     MODEL_HIDDEN1_COUNT,
@@ -255,7 +255,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         device = select_device(args.device)
         _, model = load_checkpoint(args.checkpoint, device)
-        dataset = DatasetV1(args.calibration_dataset)
+        dataset = CJ4MEDataset(args.calibration_dataset)
         quantized = quantize_model(
             model,
             dataset,

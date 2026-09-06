@@ -10,6 +10,7 @@ from .dataset import (
     CJ4MEDataset,
     DatasetHeader,
     DatasetV1,
+    DatasetV2,
     read_dataset,
 )
 from .model import MODEL_DIMENSIONS, MoveEvaluator, checkpoint_metadata
@@ -28,6 +29,7 @@ __all__ = [
     "DATASET_RECORD_SIZE",
     "DatasetHeader",
     "DatasetV1",
+    "DatasetV2",
     "FEATURE_COUNT",
     "FEATURE_SCHEMA_VERSION",
     "MODEL_DIMENSIONS",

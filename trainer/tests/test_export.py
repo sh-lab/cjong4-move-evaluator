@@ -73,6 +73,7 @@ def write_dataset(path, feature_rows):
         for features in feature_rows:
             stream.write(np.asarray(features, dtype="<f4").tobytes())
             stream.write(struct.pack("<fBBH", 0.0, 0, 0, 0))
+            stream.write(b"\0" * 24)
 
 
 def make_checkpoint(model):

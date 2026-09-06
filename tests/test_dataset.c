@@ -21,6 +21,16 @@ void test_dataset(void) {
   input.action_player = 2;
   input.action_type = 4;
   input.flags = 7;
+  input.score_delta = -12000;
+  input.settlement_delta = -12000;
+  input.deal_in_points = 12000;
+  input.decision_discard_count = 10;
+  input.round_discard_count = 18;
+  input.discards_until_end = 8;
+  input.round_end_type = CJ4_ROUND_END_RON;
+  input.available_call_mask = CJ4ME_CALL_AVAILABLE_PON;
+  input.tenpai_status = CJ4ME_TENPAI_UNKNOWN;
+  input.fact_flags = CJ4ME_FACT_PLAYER_DEALT_IN | CJ4ME_FACT_DEAL_IN_ACTION;
 
   assert(cj4me_dataset_writer_open(&writer, path));
   input.features[10] = NAN;
@@ -44,7 +54,7 @@ void test_dataset(void) {
 
   bad = fopen(bad_path, "wb");
   assert(bad != NULL);
-  assert(fwrite("CJ4MEDA1", 1u, 8u, bad) == 8u);
+  assert(fwrite("CJ4MEDA2", 1u, 8u, bad) == 8u);
   assert(fclose(bad) == 0);
   assert(!cj4me_dataset_reader_open(&reader, bad_path));
   assert(remove(bad_path) == 0);
