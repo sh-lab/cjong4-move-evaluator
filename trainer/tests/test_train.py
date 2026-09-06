@@ -19,6 +19,8 @@ from cj4me.train import (
     ValidationTracker,
     evaluate_reward_metrics,
     format_reward_metrics,
+    make_sampling_weights,
+    select_training_indices,
     train,
 )
 
@@ -96,6 +98,44 @@ def test_all_zero_metrics_report_nonzero_values_as_unavailable():
     assert "baseline_improvement=N/A" in output
 
 
+def test_zero_downsampling_is_deterministic_and_keeps_nonzero_records():
+    targets = np.zeros(100, dtype=np.float32)
+    targets[[3, 20, 99]] = [1.0, -1.0, 0.5]
+
+    first = select_training_indices(targets, 0.25, seed=42)
+    repeated = select_training_indices(targets, 0.25, seed=42)
+    other_seed = select_training_indices(targets, 0.25, seed=43)
+
+    np.testing.assert_array_equal(first.indices, repeated.indices)
+    assert not np.array_equal(first.indices, other_seed.indices)
+    assert set((3, 20, 99)).issubset(first.indices)
+    assert first.source_zero_records == 97
+    assert first.source_nonzero_records == 3
+    assert first.selected_nonzero_records == 3
+
+    nonzero_only = select_training_indices(targets, 0.0, seed=42)
+    np.testing.assert_array_equal(nonzero_only.indices, [3, 20, 99])
+    everything = select_training_indices(targets, 1.0, seed=42)
+    np.testing.assert_array_equal(everything.indices, np.arange(100))
+
+
+def test_sampling_weights_only_apply_when_both_reward_groups_exist():
+    targets = np.array([0.0, 1.0, 0.0, -1.0], dtype=np.float32)
+    weights = make_sampling_weights(targets, 4.0)
+
+    assert weights is not None
+    assert weights.dtype == torch.float64
+    assert weights.tolist() == [1.0, 4.0, 1.0, 4.0]
+    assert make_sampling_weights(targets, 1.0) is None
+    assert make_sampling_weights(np.zeros(4), 4.0) is None
+    assert make_sampling_weights(np.ones(4), 4.0) is None
+
+    with pytest.raises(ValueError, match="positive"):
+        make_sampling_weights(targets, 0.0)
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        select_training_indices(targets, 1.1, seed=1)
+
+
 def metrics_with_mse(mse):
     return RewardMetrics(
         records=1,
@@ -137,6 +177,8 @@ def test_training_saves_best_epoch_and_stops(tmp_path, monkeypatch):
         epochs=10,
         batch_size=1,
         lr=1e-3,
+        zero_keep_ratio=1.0,
+        nonzero_sample_weight=1.0,
         patience=1,
         min_delta=0.0,
         seed=1,
@@ -153,6 +195,11 @@ def test_training_saves_best_epoch_and_stops(tmp_path, monkeypatch):
     assert checkpoint["best_validation_loss"] == pytest.approx(0.25)
     assert checkpoint["training_metrics_at_best"]["mse"] == pytest.approx(0.2)
     assert checkpoint["validation_metrics_at_best"]["mse"] == pytest.approx(0.25)
+    assert checkpoint["training_selected_records"] == 1
+    assert checkpoint["training_sampled_records_at_best"] == 1
+    assert checkpoint["training_sampled_nonzero_records_at_best"] == 0
+    assert checkpoint["zero_keep_ratio"] == 1.0
+    assert checkpoint["nonzero_sample_weight"] == 1.0
     assert saved["epoch"] == 1
     assert saved["completed_epochs"] == 2
     assert saved["early_stopped"] is True

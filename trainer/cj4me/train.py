@@ -13,7 +13,7 @@ from typing import Sequence
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 
 from .dataset import DatasetV1
 from .model import MoveEvaluator, checkpoint_metadata
@@ -78,6 +78,75 @@ class RewardMetrics:
     @property
     def zero_ratio(self) -> float:
         return self.zero_records / self.records
+
+
+@dataclass(frozen=True)
+class TrainingSelection:
+    """Indices and class counts selected for one training run."""
+
+    indices: np.ndarray
+    source_zero_records: int
+    source_nonzero_records: int
+    selected_zero_records: int
+    selected_nonzero_records: int
+
+
+def select_training_indices(
+    targets: np.ndarray, zero_keep_ratio: float, seed: int
+) -> TrainingSelection:
+    """Keep every nonzero target and a deterministic fraction of zero targets."""
+    if not math.isfinite(zero_keep_ratio) or not 0.0 <= zero_keep_ratio <= 1.0:
+        raise ValueError("zero_keep_ratio must be finite and between 0 and 1")
+    targets = np.asarray(targets)
+    zero_mask = targets == 0.0
+    nonzero_mask = ~zero_mask
+    source_zero = int(np.count_nonzero(zero_mask))
+    source_nonzero = int(np.count_nonzero(nonzero_mask))
+
+    if zero_keep_ratio == 1.0:
+        keep_mask = np.ones(targets.shape, dtype=bool)
+    elif zero_keep_ratio == 0.0:
+        keep_mask = nonzero_mask
+    else:
+        values = np.arange(targets.size, dtype=np.uint64)
+        values ^= np.uint64(seed & ((1 << 64) - 1))
+        values += np.uint64(0x9E3779B97F4A7C15)
+        values = (values ^ (values >> np.uint64(30))) * np.uint64(
+            0xBF58476D1CE4E5B9
+        )
+        values = (values ^ (values >> np.uint64(27))) * np.uint64(
+            0x94D049BB133111EB
+        )
+        values ^= values >> np.uint64(31)
+        threshold = np.uint64(int(zero_keep_ratio * (1 << 64)))
+        keep_mask = nonzero_mask | (zero_mask & (values < threshold))
+
+    indices = np.flatnonzero(keep_mask).astype(np.int64, copy=False)
+    selected_zero = int(np.count_nonzero(zero_mask[indices]))
+    return TrainingSelection(
+        indices=indices,
+        source_zero_records=source_zero,
+        source_nonzero_records=source_nonzero,
+        selected_zero_records=selected_zero,
+        selected_nonzero_records=indices.size - selected_zero,
+    )
+
+
+def make_sampling_weights(
+    selected_targets: np.ndarray, nonzero_sample_weight: float
+) -> torch.Tensor | None:
+    """Return relative sampling weights, or None when weighting has no effect."""
+    if not math.isfinite(nonzero_sample_weight) or nonzero_sample_weight <= 0.0:
+        raise ValueError("nonzero_sample_weight must be finite and positive")
+    selected_targets = np.asarray(selected_targets)
+    has_zero = bool(np.any(selected_targets == 0.0))
+    has_nonzero = bool(np.any(selected_targets != 0.0))
+    if nonzero_sample_weight == 1.0 or not (has_zero and has_nonzero):
+        return None
+    weights = np.where(
+        selected_targets == 0.0, 1.0, nonzero_sample_weight
+    ).astype(np.float64)
+    return torch.from_numpy(weights)
 
 
 def seed_everything(seed: int) -> None:
@@ -233,12 +302,32 @@ def train(args: argparse.Namespace) -> dict:
     if len(validation_set) == 0:
         raise ValueError("validation dataset is empty")
 
+    selection = select_training_indices(
+        training_set.targets, args.zero_keep_ratio, args.seed
+    )
+    if selection.indices.size == 0:
+        raise ValueError("zero-reward downsampling removed every training record")
+    selected_targets = training_set.targets[selection.indices]
+    sampling_weights = make_sampling_weights(
+        selected_targets, args.nonzero_sample_weight
+    )
     loader_generator = torch.Generator().manual_seed(args.seed)
+    sampler = (
+        WeightedRandomSampler(
+            sampling_weights,
+            num_samples=selection.indices.size,
+            replacement=True,
+            generator=loader_generator,
+        )
+        if sampling_weights is not None
+        else None
+    )
     training_loader = DataLoader(
-        training_set,
+        Subset(training_set, selection.indices),
         batch_size=args.batch_size,
-        shuffle=True,
-        generator=loader_generator,
+        shuffle=sampler is None,
+        sampler=sampler,
+        generator=loader_generator if sampler is None else None,
     )
     validation_loader = DataLoader(
         validation_set,
@@ -263,11 +352,21 @@ def train(args: argparse.Namespace) -> dict:
         f"device={device} train={len(training_set)} "
         f"validation={len(validation_set)}"
     )
+    print(
+        f"training_selection records={selection.indices.size} "
+        f"zero={selection.selected_zero_records}/{selection.source_zero_records} "
+        "nonzero="
+        f"{selection.selected_nonzero_records}/{selection.source_nonzero_records} "
+        f"nonzero_sample_weight={args.nonzero_sample_weight:g} "
+        f"weighted_sampling={'yes' if sampler is not None else 'no'}"
+    )
     for epoch in range(1, args.epochs + 1):
         model.train()
         total_loss = 0.0
         total_count = 0
+        sampled_nonzero_records = 0
         for features, targets in training_loader:
+            sampled_nonzero_records += int((targets != 0.0).sum().item())
             features = features.to(device)
             targets = targets.to(device).unsqueeze(1)
             optimizer.zero_grad(set_to_none=True)
@@ -291,6 +390,7 @@ def train(args: argparse.Namespace) -> dict:
         print(
             f"epoch={epoch}/{args.epochs} "
             f"train_loss={training_loss:.8f} validation_loss={validation_loss:.8f}"
+            f" sampled_nonzero={sampled_nonzero_records}/{total_count}"
             f"{' best' if improved else ''}"
         )
         print(format_reward_metrics("train", training_metrics))
@@ -307,10 +407,23 @@ def train(args: argparse.Namespace) -> dict:
                 "epoch": epoch,
                 "best_validation_loss": validation_loss,
                 "training_loss_at_best": training_loss,
+                "training_sampled_records_at_best": total_count,
+                "training_sampled_nonzero_records_at_best": (
+                    sampled_nonzero_records
+                ),
                 "training_metrics_at_best": asdict(training_metrics),
                 "validation_metrics_at_best": asdict(validation_metrics),
                 "seed": args.seed,
                 "training_records": len(training_set),
+                "training_selected_records": int(selection.indices.size),
+                "training_source_zero_records": selection.source_zero_records,
+                "training_source_nonzero_records": selection.source_nonzero_records,
+                "training_selected_zero_records": selection.selected_zero_records,
+                "training_selected_nonzero_records": (
+                    selection.selected_nonzero_records
+                ),
+                "zero_keep_ratio": args.zero_keep_ratio,
+                "nonzero_sample_weight": args.nonzero_sample_weight,
                 "validation_records": len(validation_set),
                 "training_dataset": str(Path(args.dataset)),
                 "validation_dataset": str(Path(args.validation_dataset)),
@@ -355,6 +468,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument(
+        "--zero-keep-ratio",
+        type=float,
+        default=1.0,
+        help="deterministic fraction of zero-reward training records to retain",
+    )
+    parser.add_argument(
+        "--nonzero-sample-weight",
+        type=float,
+        default=1.0,
+        help="relative sampling weight for retained nonzero-reward records",
+    )
+    parser.add_argument(
         "--patience",
         type=int,
         default=5,
@@ -381,6 +506,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--batch-size must be at least 1")
     if args.lr <= 0:
         parser.error("--lr must be positive")
+    if not math.isfinite(args.zero_keep_ratio) or not (
+        0.0 <= args.zero_keep_ratio <= 1.0
+    ):
+        parser.error("--zero-keep-ratio must be finite and between 0 and 1")
+    if (
+        not math.isfinite(args.nonzero_sample_weight)
+        or args.nonzero_sample_weight <= 0.0
+    ):
+        parser.error("--nonzero-sample-weight must be finite and positive")
     if args.patience < 0:
         parser.error("--patience must be nonnegative")
     if args.min_delta < 0 or not math.isfinite(args.min_delta):

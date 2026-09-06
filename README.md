@@ -310,6 +310,8 @@ python -m cj4me.train \
   --validation-dataset validation.cj4medata \
   --epochs 10 \
   --batch-size 1024 \
+  --zero-keep-ratio 0.25 \
+  --nonzero-sample-weight 4 \
   --patience 5 \
   --seed 1 \
   --output model.pt
@@ -331,6 +333,17 @@ early stoppingを無効にします。`--min-delta`で改善とみなす最小�
 非ゼロレコードが存在しない場合、その指標は `N/A` と表示されます。最良epochの
 指標はcheckpointの `training_metrics_at_best` と
 `validation_metrics_at_best` にも保存されます。
+
+`--zero-keep-ratio` は学習候補に残すゼロ報酬レコードの割合です。非ゼロ報酬は
+常に候補へ残し、ゼロ報酬の選択はseedと元のレコード番号から決定するため、同じ
+dataset・seed・設定なら同じ部分集合になります。`--nonzero-sample-weight` は
+残った候補からbatchを作る際の非ゼロ報酬の相対抽選重みです。重み付け時は復元
+抽出を使い、1 epochの抽選数は間引き後のレコード数と同じです。
+
+これらはtrainingだけへ適用します。validationと表示用のtrain metricsは間引き前の
+全レコードで計算します。両オプションの既定値は `1.0` で、従来と同じ全件shuffle
+学習になります。まずは `zero-keep-ratio=0.25`、`nonzero-sample-weight=4` 程度から
+始め、非ゼロ群の誤差と対局成績を見ながら調整します。
 
 ## Emscripten
 
