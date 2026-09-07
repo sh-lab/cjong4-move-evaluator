@@ -24,7 +24,7 @@ validationでは常にゼロを返すbaselineを上回れなかった。この�
 | `menzen` | 面前型 | チー・ポン・明槓を控える |
 | `call` | 鳴き型 | 鳴きと鳴ける場面での選択を重視する |
 | `speed` | 速度型 | 打点より早い聴牌・和了を優先する |
-| `value` | 打点型 | 和了率より高打点を狙う |
+| `kokushi` | 国士無双型 | 条件が良い配牌では国士無双を優先する |
 | `riichi` | リーチ型 | リーチ可能時に積極的にリーチする |
 | `dama` | ダマ型 | リーチを控えダマテンを活用する |
 
@@ -43,6 +43,7 @@ total_return =
     + deal_in_weight * deal_in_component
     + call_weight * call_component
     + speed_weight * speed_component
+    + kokushi_weight * kokushi_component
     + riichi_weight * riichi_component
 ```
 
@@ -94,7 +95,7 @@ cjong4の合法手
 | `menzen` | チー・ポン・明槓を除外 |
 | `call` | 鳴ける場面でPASSを除外する設定を選択可能にする |
 | `speed` | 明らかに向聴数を悪化させる候補を除外 |
-| `value` | 原則なし |
+| `kokushi` | 么九牌9種以上で国士向聴数が有望なら国士を崩す候補を除外 |
 | `riichi` | リーチ可能時にリーチ系行動だけ残す設定を選択可能にする |
 | `dama` | リーチ行動を除外 |
 
@@ -106,12 +107,13 @@ cjong4の合法手
 4. **完了:** ゼロ報酬・非ゼロ報酬を分けた評価指標を追加する
 5. **完了:** ゼロ報酬を決定的に間引く設定とサンプリング重みを追加する
 6. **完了:** datasetへ個性報酬を再構成できる事実・イベントを追加する
-7. 方策フィルターをNN評価器から独立したC APIとして追加する
-8. 合法手ごとのcounterfactual Monte Carlo rolloutを追加する
-9. 必要に応じてPlayerViewと整合する未知牌の再決定化を追加する
-10. `standard`を学習し、そこから残り7種類をファインチューニングする
-11. 個性ごとの対局成績、放銃率、和了率、平均打点、鳴き率、リーチ率を比較する
-12. `cjong4-opponent`とWASMへ8モデルとフィルター設定を統合する
+7. **完了:** 方策フィルターをNN評価器から独立したC APIとして追加する
+8. datasetへ国士無双和了フラグを追加し、8種類の教師報酬プリセットを実装する
+9. 合法手ごとのcounterfactual Monte Carlo rolloutを追加する
+10. 必要に応じてPlayerViewと整合する未知牌の再決定化を追加する
+11. `standard`を学習し、そこから残り7種類をファインチューニングする
+12. 個性ごとの対局成績、放銃率、和了率、平均打点、鳴き率、リーチ率を比較する
+13. `cjong4-opponent`とWASMへ8モデルとフィルター設定を統合する
 
 各段階では、同一seedの再現性、PlayerView以外の非公開情報が特徴量へ
 入らないこと、PyTorch/native C/WASM間の推論一致を維持する。

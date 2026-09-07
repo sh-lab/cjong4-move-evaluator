@@ -54,6 +54,8 @@ void test_evaluator(void) {
   cj4me_model_i8 *model_i8 = (cj4me_model_i8 *)calloc(1u, sizeof(*model_i8));
   cj4me_inference_f32_scratch scratch;
   cj4me_inference_i8_scratch scratch_i8;
+  cj4me_policy_filter_config filter;
+  cj4me_evaluator_context context;
   cj4_player_view view = empty_view();
   cj4_rules rules = cj4_rules_default();
   cj4_action actions[3];
@@ -98,6 +100,26 @@ void test_evaluator(void) {
                                 &scratch_i8, &selected, &score_i8));
   assert(selected == 1u);
   assert(score_i8.quantized == 2);
+
+  actions[1].type = CJ4_ACTION_RIICHI;
+  actions[1].tile = actions[0].tile;
+  assert(cj4me_policy_filter_preset(CJ4ME_POLICY_RIICHI,
+                                    CJ4ME_POLICY_FILTER_SOFT, 0.5f, &filter));
+  assert(cj4me_select_action_f32_filtered(
+      model, &view, &rules, actions, 2u, &filter, &scratch, &selected, &score));
+  assert(selected == 1u);
+  assert(score == 1.5f);
+  assert(cj4me_select_action_i8_filtered(model_i8, &view, &rules, actions, 2u,
+                                         &filter, &scratch_i8, &selected,
+                                         &score_i8));
+  assert(selected == 1u);
+  assert(score_i8.quantized == 2);
+
+  assert(cj4me_evaluator_context_init(&context, CJ4ME_MODEL_KIND_F32, model,
+                                      &rules));
+  assert(cj4me_evaluator_context_set_policy_filter(&context, &filter));
+  assert(cj4me_evaluator_decide(&context, &view, actions, 2u).type ==
+         CJ4_ACTION_RIICHI);
 
   free(model);
   free(model_i8);

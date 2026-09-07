@@ -9,6 +9,7 @@
 #include "cjong4/core/player.h"
 #include "cjong4/core/rules.h"
 #include "cjong4/manager/player_view.h"
+#include "cjong4_move_evaluator/policy_filter.h"
 
 typedef bool (*cj4me_score_actions_fn)(
     void *context, const cj4_player_view *view, const cj4_rules *rules,
@@ -30,6 +31,7 @@ typedef struct {
   void *score_context;
   cj4me_reward_fn reward;
   void *reward_context;
+  const cj4me_policy_filter_config *policy_filter;
 } cj4me_selfplay_config;
 
 bool cj4me_generate_dataset(const cj4me_selfplay_config *config, char *error,

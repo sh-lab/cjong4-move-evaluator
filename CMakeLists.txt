@@ -28,6 +28,7 @@ add_library(cj4me STATIC
     src/inference_f32.c
     src/inference_i8.c
     src/model_io.c
+    src/policy_filter.c
     src/rng.c
     src/selfplay.c
 )
@@ -73,6 +74,7 @@ if(CJ4ME_BUILD_TESTS)
         tests/test_evaluator.c
         tests/test_feature.c
         tests/test_model.c
+        tests/test_policy_filter.c
         tests/test_rng.c
     )
     target_link_libraries(cj4me_tests PRIVATE cj4me)

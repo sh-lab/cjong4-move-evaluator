@@ -98,6 +98,10 @@ static uint8_t forced_or_random_index(selfplay_context *context,
                                       const cj4_player_view *view,
                                       const cj4_action *actions,
                                       uint8_t action_count) {
+  cj4me_policy_filter_result filtered;
+  cj4_action candidate_actions[CJ4M_MAX_ACTIONS];
+  uint8_t candidate_indices[CJ4M_MAX_ACTIONS];
+  uint8_t candidate_count = 0u;
   uint8_t selected;
   for (uint8_t i = 0; i < action_count; ++i)
     if (actions[i].type == CJ4_ACTION_TSUMO)
@@ -106,20 +110,40 @@ static uint8_t forced_or_random_index(selfplay_context *context,
     if (actions[i].type == CJ4_ACTION_RON)
       return i;
 
+  if (!cj4me_policy_filter_apply(context->config->policy_filter, view, actions,
+                                 action_count, &filtered)) {
+    context->failed = true;
+    context->failure = "policy filter failed";
+    return 0u;
+  }
+  for (uint8_t i = 0; i < action_count; ++i) {
+    if (!filtered.allowed[i])
+      continue;
+    candidate_indices[candidate_count] = i;
+    candidate_actions[candidate_count] = actions[i];
+    ++candidate_count;
+  }
+  if (candidate_count == 0u) {
+    context->failed = true;
+    context->failure = "policy filter returned no actions";
+    return 0u;
+  }
+
   if (context->config->score_actions &&
       cj4me_rng_unit(&context->rng) >= context->config->epsilon) {
     if (!context->config->score_actions(context->config->score_context, view,
-                                        context->rules, actions, action_count,
-                                        &selected) ||
-        selected >= action_count) {
+                                        context->rules, candidate_actions,
+                                        candidate_count, &selected) ||
+        selected >= candidate_count) {
       context->failed = true;
       context->failure = "model action evaluation failed";
       return 0u;
     }
-    return selected;
+    return candidate_indices[selected];
   }
 
-  return (uint8_t)cj4me_rng_bounded(&context->rng, action_count);
+  selected = (uint8_t)cj4me_rng_bounded(&context->rng, candidate_count);
+  return candidate_indices[selected];
 }
 
 static cj4_action selfplay_decide(void *opaque, const cj4_player_view *view,

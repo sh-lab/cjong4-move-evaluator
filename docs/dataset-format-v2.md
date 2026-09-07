@@ -98,9 +98,10 @@ recorded discard, riichi, kakan, or ankan that caused ron. If the causal action
 had only one legal choice and was therefore not recorded, no earlier action is
 incorrectly marked as the cause.
 
-These raw facts allow Python to rebuild targets for standard, defensive,
-menzen, call-heavy, speed, value, riichi, and dama personalities without
-regenerating self-play games.
+These raw facts allow Python to rebuild most target components for standard,
+defensive, menzen, call-heavy, speed, riichi, and dama personalities without
+regenerating self-play games. An exact kokushi-win bonus requires a future
+winning-yaku flag.
 
 An empty dataset has a valid header and a record count of zero. Readers reject
 unknown versions, schema/count/record-size mismatches, invalid fact values,

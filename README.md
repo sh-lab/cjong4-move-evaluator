@@ -263,6 +263,23 @@ dataset が生成されます。
 局面と、必ず選択するツモ・ロンはdatasetへ記録しません。鳴きと競合する
 `PASS` は学習対象として記録します。
 
+個性による方策フィルターを使用する場合は、`--policy`とhard/softの動作を
+指定します。
+
+```sh
+./build/cj4me_generate \
+  --games 100 \
+  --seed 3 \
+  --epsilon 0.1 \
+  --model model-i8.cj4memodel \
+  --policy menzen \
+  --filter-mode soft \
+  --filter-strength 0.05 \
+  --output menzen.cj4medata
+```
+
+詳細は[方策フィルター](docs/policy-filter.md)を参照してください。
+
 ## Cでのモデル読み込みと行動選択
 
 モデル本体は大きいため、setup時に一度だけ確保し、推論中は同じmodelと
@@ -370,6 +387,7 @@ cmake --build build-wasm --parallel
 - [dataset形式 v1（旧形式）](docs/dataset-format-v1.md)
 - [model形式 v2](docs/model-format-v2.md)
 - [model形式 v1（旧形式）](docs/model-format-v1.md)
+- [方策フィルター](docs/policy-filter.md)
 
 ## 今後の開発方針
 
@@ -383,3 +401,5 @@ cmake --build build-wasm --parallel
 - SIMD最適化は未実装で、C11のscalar参照実装を使用します。
 - dataset v2は個性報酬を再構成する教師用事実を保持しますが、事実から
   8種類の報酬を合成するtrainer側のプリセットは未実装です。
+- `safe`は相手のリーチ・役牌副露・中盤以降の連続ツモ切りを検出し、現物を
+  優先します。`kokushi`は么九牌9種以上かつ向聴数差1以内で発動します。
