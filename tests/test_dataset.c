@@ -52,6 +52,14 @@ void test_dataset(void) {
   assert(!cj4me_dataset_reader_open(&reader, path));
   assert(remove(path) == 0);
 
+  assert(cj4me_dataset_writer_open(&writer, path));
+  input.fact_flags = CJ4ME_FACT_PLAYER_WON_KOKUSHI;
+  assert(!cj4me_dataset_writer_append(&writer, &input));
+  input.fact_flags = CJ4ME_FACT_PLAYER_WON | CJ4ME_FACT_PLAYER_WON_KOKUSHI;
+  assert(cj4me_dataset_writer_append(&writer, &input));
+  assert(cj4me_dataset_writer_close(&writer));
+  assert(remove(path) == 0);
+
   bad = fopen(bad_path, "wb");
   assert(bad != NULL);
   assert(fwrite("CJ4MEDA2", 1u, 8u, bad) == 8u);

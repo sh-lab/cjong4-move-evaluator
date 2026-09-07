@@ -86,6 +86,8 @@ void test_rng(void) {
           assert((record.fact_flags & CJ4ME_FACT_PLAYER_DEALT_IN) != 0u);
           assert(record.round_end_type == CJ4_ROUND_END_RON);
         }
+        if ((record.fact_flags & CJ4ME_FACT_PLAYER_WON_KOKUSHI) != 0u)
+          assert((record.fact_flags & CJ4ME_FACT_PLAYER_WON) != 0u);
         if (record.round_end_type == CJ4_ROUND_END_EXHAUSTIVE_DRAW)
           assert(record.tenpai_status != CJ4ME_TENPAI_UNKNOWN);
         else

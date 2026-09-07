@@ -17,6 +17,12 @@ from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 
 from .dataset import CJ4MEDataset
 from .model import MoveEvaluator, checkpoint_metadata
+from .reward import (
+    DEFAULT_PERSONALITY_WEIGHT,
+    DEFAULT_REWARD_SCALE,
+    PERSONALITIES,
+    build_teacher_dataset,
+)
 
 
 @dataclass
@@ -293,14 +299,31 @@ def format_reward_metrics(name: str, metrics: RewardMetrics) -> str:
 def train(args: argparse.Namespace) -> dict:
     seed_everything(args.seed)
     device = select_device(args.device)
-    training_set = CJ4MEDataset(args.dataset)
-    validation_set = CJ4MEDataset(args.validation_dataset)
+    personality = getattr(args, "personality", "standard")
+    personality_weight = getattr(
+        args, "personality_weight", DEFAULT_PERSONALITY_WEIGHT
+    )
+    reward_scale = getattr(args, "reward_scale", DEFAULT_REWARD_SCALE)
+    raw_training_set = CJ4MEDataset(args.dataset)
+    raw_validation_set = CJ4MEDataset(args.validation_dataset)
     if Path(args.dataset).resolve() == Path(args.validation_dataset).resolve():
         raise ValueError("training and validation datasets must be different files")
-    if len(training_set) == 0:
+    if len(raw_training_set) == 0:
         raise ValueError("training dataset is empty")
-    if len(validation_set) == 0:
+    if len(raw_validation_set) == 0:
         raise ValueError("validation dataset is empty")
+    training_set = build_teacher_dataset(
+        raw_training_set,
+        personality,
+        personality_weight=personality_weight,
+        reward_scale=reward_scale,
+    )
+    validation_set = build_teacher_dataset(
+        raw_validation_set,
+        personality,
+        personality_weight=personality_weight,
+        reward_scale=reward_scale,
+    )
 
     selection = select_training_indices(
         training_set.targets, args.zero_keep_ratio, args.seed
@@ -350,7 +373,8 @@ def train(args: argparse.Namespace) -> dict:
 
     print(
         f"device={device} train={len(training_set)} "
-        f"validation={len(validation_set)}"
+        f"validation={len(validation_set)} personality={personality} "
+        f"personality_weight={personality_weight:g}"
     )
     print(
         f"training_selection records={selection.indices.size} "
@@ -424,6 +448,9 @@ def train(args: argparse.Namespace) -> dict:
                 ),
                 "zero_keep_ratio": args.zero_keep_ratio,
                 "nonzero_sample_weight": args.nonzero_sample_weight,
+                "personality": personality,
+                "personality_weight": personality_weight,
+                "reward_scale": reward_scale,
                 "validation_records": len(validation_set),
                 "training_dataset": str(Path(args.dataset)),
                 "validation_dataset": str(Path(args.validation_dataset)),
@@ -468,6 +495,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument(
+        "--personality",
+        choices=PERSONALITIES,
+        default="standard",
+        help="teacher reward preset reconstructed from dataset facts",
+    )
+    parser.add_argument(
+        "--personality-weight",
+        type=float,
+        default=DEFAULT_PERSONALITY_WEIGHT,
+        help="weight applied to the selected personality component",
+    )
+    parser.add_argument(
+        "--reward-scale",
+        type=float,
+        default=DEFAULT_REWARD_SCALE,
+        help="point scale used by the safe personality's deal-in component",
+    )
+    parser.add_argument(
         "--zero-keep-ratio",
         type=float,
         default=1.0,
@@ -506,6 +551,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--batch-size must be at least 1")
     if args.lr <= 0:
         parser.error("--lr must be positive")
+    if not math.isfinite(args.personality_weight) or args.personality_weight < 0:
+        parser.error("--personality-weight must be finite and nonnegative")
+    if not math.isfinite(args.reward_scale) or args.reward_scale <= 0:
+        parser.error("--reward-scale must be finite and positive")
     if not math.isfinite(args.zero_keep_ratio) or not (
         0.0 <= args.zero_keep_ratio <= 1.0
     ):

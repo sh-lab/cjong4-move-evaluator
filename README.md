@@ -327,6 +327,8 @@ python -m cj4me.train \
   --validation-dataset validation.cj4medata \
   --epochs 10 \
   --batch-size 1024 \
+  --personality standard \
+  --personality-weight 0.05 \
   --zero-keep-ratio 0.25 \
   --nonzero-sample-weight 4 \
   --patience 5 \
@@ -362,6 +364,12 @@ dataset・seed・設定なら同じ部分集合になります。`--nonzero-samp
 学習になります。まずは `zero-keep-ratio=0.25`、`nonzero-sample-weight=4` 程度から
 始め、非ゼロ群の誤差と対局成績を見ながら調整します。
 
+`--personality` は `standard`、`safe`、`menzen`、`call`、`speed`、
+`kokushi`、`riichi`、`dama` の8種類です。dataset v3の教師用事実から個性成分を
+再構成し、保存済み点数収支へ `--personality-weight` 倍して加えます。同じ自己対局
+datasetから8種類を学習でき、教師用事実はNN入力には入りません。各プリセットの
+式は[個性別の教師報酬](docs/personality-rewards.md)に記載しています。
+
 ## Emscripten
 
 CライブラリはOS固有API、スレッド、SIMDを要求しません。cjong4を同じ
@@ -383,11 +391,13 @@ cmake --build build-wasm --parallel
 
 - [特徴量スキーマ v3](docs/feature-schema-v3.md)
 - [特徴量スキーマ v2（旧形式）](docs/feature-schema-v2.md)
-- [dataset形式 v2](docs/dataset-format-v2.md)
+- [dataset形式 v3](docs/dataset-format-v3.md)
+- [dataset形式 v2（旧形式）](docs/dataset-format-v2.md)
 - [dataset形式 v1（旧形式）](docs/dataset-format-v1.md)
 - [model形式 v2](docs/model-format-v2.md)
 - [model形式 v1（旧形式）](docs/model-format-v1.md)
 - [方策フィルター](docs/policy-filter.md)
+- [個性別の教師報酬](docs/personality-rewards.md)
 
 ## 今後の開発方針
 
@@ -399,7 +409,7 @@ cmake --build build-wasm --parallel
 - 未選択の合法手へ分岐する counterfactual rollout は未実装です。
 - 未知牌の再決定化は未実装です。
 - SIMD最適化は未実装で、C11のscalar参照実装を使用します。
-- dataset v2は個性報酬を再構成する教師用事実を保持しますが、事実から
-  8種類の報酬を合成するtrainer側のプリセットは未実装です。
+- dataset v3は国士無双和了を含む教師用事実を保持し、trainerで8種類の
+  個性報酬を同じdatasetから再構成できます。
 - `safe`は相手のリーチ・役牌副露・中盤以降の連続ツモ切りを検出し、現物を
   優先します。`kokushi`は么九牌9種以上かつ向聴数差1以内で発動します。

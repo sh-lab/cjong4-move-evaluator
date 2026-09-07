@@ -201,6 +201,9 @@ def test_training_saves_best_epoch_and_stops(tmp_path, monkeypatch):
     assert checkpoint["training_sampled_nonzero_records_at_best"] == 0
     assert checkpoint["zero_keep_ratio"] == 1.0
     assert checkpoint["nonzero_sample_weight"] == 1.0
+    assert checkpoint["personality"] == "standard"
+    assert checkpoint["personality_weight"] == pytest.approx(0.05)
+    assert checkpoint["reward_scale"] == pytest.approx(8000.0)
     assert saved["epoch"] == 1
     assert saved["completed_epochs"] == 2
     assert saved["early_stopped"] is True

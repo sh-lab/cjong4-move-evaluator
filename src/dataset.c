@@ -6,7 +6,7 @@
 #include <string.h>
 
 static const uint8_t DATASET_MAGIC[8] = {'C', 'J', '4', 'M',
-                                         'E', 'D', 'A', '2'};
+                                         'E', 'D', 'A', '3'};
 
 _Static_assert(sizeof(float) == 4u, "dataset format requires 32-bit float");
 _Static_assert(sizeof(cj4me_dataset_record) == CJ4ME_DATASET_RECORD_SIZE,
@@ -109,7 +109,9 @@ bool cj4me_dataset_writer_append(cj4me_dataset_writer *writer,
       record->round_end_type > CJ4_ROUND_END_ABORTIVE_DRAW ||
       (record->available_call_mask & ~CJ4ME_CALL_AVAILABLE_MASK) != 0u ||
       record->tenpai_status > CJ4ME_TENPAI_YES ||
-      (record->fact_flags & ~CJ4ME_FACT_FLAGS_MASK) != 0u) {
+      (record->fact_flags & ~CJ4ME_FACT_FLAGS_MASK) != 0u ||
+      ((record->fact_flags & CJ4ME_FACT_PLAYER_WON_KOKUSHI) != 0u &&
+       (record->fact_flags & CJ4ME_FACT_PLAYER_WON) == 0u)) {
     return false;
   }
   for (size_t i = 0; i < CJ4ME_FEATURE_COUNT; ++i) {
@@ -260,7 +262,9 @@ bool cj4me_dataset_reader_next(cj4me_dataset_reader *reader,
       record->round_end_type > CJ4_ROUND_END_ABORTIVE_DRAW ||
       (record->available_call_mask & ~CJ4ME_CALL_AVAILABLE_MASK) != 0u ||
       record->tenpai_status > CJ4ME_TENPAI_YES ||
-      (record->fact_flags & ~CJ4ME_FACT_FLAGS_MASK) != 0u) {
+      (record->fact_flags & ~CJ4ME_FACT_FLAGS_MASK) != 0u ||
+      ((record->fact_flags & CJ4ME_FACT_PLAYER_WON_KOKUSHI) != 0u &&
+       (record->fact_flags & CJ4ME_FACT_PLAYER_WON) == 0u)) {
     reader->failed = true;
     return false;
   }

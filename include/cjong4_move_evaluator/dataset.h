@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define CJ4ME_DATASET_FORMAT_VERSION 2u
+#define CJ4ME_DATASET_FORMAT_VERSION 3u
 #define CJ4ME_DATASET_HEADER_SIZE 32u
 #define CJ4ME_DATASET_RECORD_SIZE ((uint32_t)(CJ4ME_FEATURE_COUNT * 4u + 32u))
 
@@ -40,7 +40,8 @@ enum {
   CJ4ME_FACT_PLAYER_WON = 1u << 6,
   CJ4ME_FACT_PLAYER_DEALT_IN = 1u << 7,
   CJ4ME_FACT_DEAL_IN_ACTION = 1u << 8,
-  CJ4ME_FACT_FLAGS_MASK = (1u << 9) - 1u
+  CJ4ME_FACT_PLAYER_WON_KOKUSHI = 1u << 9,
+  CJ4ME_FACT_FLAGS_MASK = (1u << 10) - 1u
 };
 
 typedef struct {

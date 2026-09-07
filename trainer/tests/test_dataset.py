@@ -13,6 +13,9 @@ from cj4me.dataset import (
     FEATURE_SCHEMA_VERSION,
     DatasetV1,
     DatasetV2,
+    DatasetV3,
+    FACT_PLAYER_WON,
+    FACT_PLAYER_WON_KOKUSHI,
 )
 
 
@@ -83,7 +86,7 @@ def test_reads_records_with_numpy_and_torch_access(tmp_path):
     }
     write_dataset(path, [(features, 1.25, 2, 7, 3, facts)])
 
-    dataset = DatasetV2(path)
+    dataset = DatasetV3(path)
 
     assert len(dataset) == 1
     assert isinstance(dataset.records, np.memmap)
@@ -108,7 +111,8 @@ def test_reads_records_with_numpy_and_torch_access(tmp_path):
     assert dataset.round_end_types[0] == 1
     assert dataset.tenpai_statuses[0] == 2
     assert dataset.fact_flags[0] == 65
-    assert DatasetV1 is DatasetV2
+    assert DatasetV1 is DatasetV3
+    assert DatasetV2 is DatasetV3
 
 
 def test_empty_dataset_is_valid(tmp_path):
@@ -117,6 +121,14 @@ def test_empty_dataset_is_valid(tmp_path):
     dataset = DatasetV1(path)
     assert len(dataset) == 0
     assert dataset.features.shape == (0, FEATURE_COUNT)
+
+
+def test_rejects_dataset_v2_magic(tmp_path):
+    path = tmp_path / "v2.cj4medata"
+    write_dataset(path, magic=b"CJ4MEDA2", format_version=2)
+
+    with pytest.raises(ValueError, match="magic"):
+        DatasetV3(path)
 
 
 @pytest.mark.parametrize(
@@ -199,7 +211,8 @@ def test_rejects_invalid_action_metadata(tmp_path, player, action_type, message)
         ({"round_end_type": 5}, "round end type"),
         ({"available_call_mask": 8}, "call mask"),
         ({"tenpai_status": 3}, "tenpai status"),
-        ({"fact_flags": 1 << 9}, "fact flags"),
+        ({"fact_flags": 1 << 10}, "fact flags"),
+        ({"fact_flags": FACT_PLAYER_WON_KOKUSHI}, "kokushi win"),
     ],
 )
 def test_rejects_invalid_teacher_facts(tmp_path, facts, message):
@@ -207,4 +220,15 @@ def test_rejects_invalid_teacher_facts(tmp_path, facts, message):
     features = np.zeros(FEATURE_COUNT, dtype=np.float32)
     write_dataset(path, [(features, 0.0, 0, 0, 0, facts)])
     with pytest.raises(ValueError, match=message):
-        DatasetV2(path)
+        DatasetV3(path)
+
+
+def test_accepts_kokushi_win_fact(tmp_path):
+    path = tmp_path / "kokushi.cj4medata"
+    features = np.zeros(FEATURE_COUNT, dtype=np.float32)
+    facts = {"fact_flags": FACT_PLAYER_WON | FACT_PLAYER_WON_KOKUSHI}
+    write_dataset(path, [(features, 1.0, 0, 0, 0, facts)])
+
+    dataset = DatasetV3(path)
+
+    assert dataset.fact_flags[0] == FACT_PLAYER_WON | FACT_PLAYER_WON_KOKUSHI

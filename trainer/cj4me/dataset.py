@@ -1,4 +1,4 @@
-"""Reader and PyTorch dataset for the CJ4ME dataset v2 container format."""
+"""Reader and PyTorch dataset for the CJ4ME dataset v3 container format."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-DATASET_MAGIC = b"CJ4MEDA2"
-DATASET_FORMAT_VERSION = 2
+DATASET_MAGIC = b"CJ4MEDA3"
+DATASET_FORMAT_VERSION = 3
 FEATURE_SCHEMA_VERSION = 3
 TILE_COUNT = 136
 TILE_FEATURE_COUNT = 13
@@ -50,7 +50,8 @@ FACT_CHOSE_RIICHI = 1 << 5
 FACT_PLAYER_WON = 1 << 6
 FACT_PLAYER_DEALT_IN = 1 << 7
 FACT_DEAL_IN_ACTION = 1 << 8
-FACT_FLAGS_MASK = (1 << 9) - 1
+FACT_PLAYER_WON_KOKUSHI = 1 << 9
+FACT_FLAGS_MASK = (1 << 10) - 1
 
 _HEADER = struct.Struct("<8s6I")
 RECORD_DTYPE = np.dtype(
@@ -76,7 +77,7 @@ RECORD_DTYPE = np.dtype(
 )
 
 if RECORD_DTYPE.itemsize != DATASET_RECORD_SIZE:
-    raise RuntimeError("dataset record dtype does not match the v2 format")
+    raise RuntimeError("dataset record dtype does not match the v3 format")
 
 
 @dataclass(frozen=True)
@@ -140,7 +141,7 @@ def _read_header(path: Path) -> DatasetHeader:
     )
 
 
-class DatasetV2(Dataset[tuple[torch.Tensor, torch.Tensor]]):
+class DatasetV3(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     """Memory-mapped dataset that returns ``(features, target)`` tensors."""
 
     def __init__(self, path: str | os.PathLike[str], *, validate_finite: bool = True):
@@ -187,6 +188,11 @@ class DatasetV2(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             raise ValueError("dataset contains an invalid tenpai status")
         if np.any(self.fact_flags & np.uint16(0xFFFF ^ FACT_FLAGS_MASK)):
             raise ValueError("dataset contains invalid fact flags")
+        kokushi_without_win = (
+            (self.fact_flags & FACT_PLAYER_WON_KOKUSHI) != 0
+        ) & ((self.fact_flags & FACT_PLAYER_WON) == 0)
+        if np.any(kokushi_without_win):
+            raise ValueError("dataset contains a kokushi win without a player win")
 
     def __len__(self) -> int:
         return self.header.record_count
@@ -270,15 +276,16 @@ class DatasetV2(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             yield self[index]
 
 
-CJ4MEDataset = DatasetV2
+CJ4MEDataset = DatasetV3
 
-# Compatibility name for existing training scripts. It opens only the current
-# v2 container and is not a legacy v1 reader.
-DatasetV1 = DatasetV2
+# Compatibility names for existing training scripts. They open only the current
+# v3 container and are not legacy-format readers.
+DatasetV1 = DatasetV3
+DatasetV2 = DatasetV3
 
 
 def read_dataset(
     path: str | os.PathLike[str], *, validate_finite: bool = True
-) -> DatasetV2:
-    """Open a dataset v2 file using memory-mapped record access."""
-    return DatasetV2(path, validate_finite=validate_finite)
+) -> DatasetV3:
+    """Open a dataset v3 file using memory-mapped record access."""
+    return DatasetV3(path, validate_finite=validate_finite)

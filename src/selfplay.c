@@ -25,6 +25,7 @@ typedef struct {
   int32_t round_start_scores[CJ4_PLAYER_COUNT];
   int32_t round_end_scores[CJ4_PLAYER_COUNT];
   uint32_t last_causal_record[CJ4_PLAYER_COUNT];
+  bool round_kokushi_winners[CJ4_PLAYER_COUNT];
   bool round_end_scores_valid;
   bool failed;
   const char *failure;
@@ -241,6 +242,30 @@ static uint32_t deal_in_action_index(const selfplay_context *context,
   return context->last_causal_record[discarder];
 }
 
+static bool collect_kokushi_winners(const cj4_mahjong *round_end,
+                                    const cj4_rules *rules,
+                                    bool winners[CJ4_PLAYER_COUNT]) {
+  cj4_win_result results[CJ4_PLAYER_COUNT];
+  uint8_t result_count = 0u;
+  memset(winners, 0, sizeof(bool) * CJ4_PLAYER_COUNT);
+  if (!cj4_collect_winning_results(round_end, rules, results, CJ4_PLAYER_COUNT,
+                                   &result_count))
+    return false;
+  for (uint8_t i = 0; i < result_count; ++i) {
+    const cj4_win_result *result = &results[i];
+    if (result->player >= CJ4_PLAYER_COUNT)
+      return false;
+    for (uint8_t yaku = 0; yaku < result->yaku_count; ++yaku) {
+      if (result->yaku[yaku] == CJ4_WIN_YAKU_KOKUSHI ||
+          result->yaku[yaku] == CJ4_WIN_YAKU_KOKUSHI_13_WAIT) {
+        winners[result->player] = true;
+        break;
+      }
+    }
+  }
+  return true;
+}
+
 static bool flush_round(selfplay_context *context, const cj4_mahjong *settled,
                         cj4me_dataset_writer *writer) {
   cj4me_reward_fn reward =
@@ -293,6 +318,8 @@ static bool flush_round(selfplay_context *context, const cj4_mahjong *settled,
     record->tenpai_status = tenpai_statuses[player];
     if (cj4_state_is_winner(settled, player)) {
       record->fact_flags |= CJ4ME_FACT_PLAYER_WON;
+      if (context->round_kokushi_winners[player])
+        record->fact_flags |= CJ4ME_FACT_PLAYER_WON_KOKUSHI;
       if (record->settlement_delta > 0)
         record->win_points = record->settlement_delta;
     }
@@ -310,6 +337,8 @@ static bool flush_round(selfplay_context *context, const cj4_mahjong *settled,
   }
   context->pending_count = 0u;
   context->round_end_scores_valid = false;
+  memset(context->round_kokushi_winners, 0,
+         sizeof(context->round_kokushi_winners));
   return true;
 }
 
@@ -412,6 +441,8 @@ bool cj4me_generate_dataset(const cj4me_selfplay_config *config, char *error,
         memcpy(context.round_start_scores, state.scores,
                sizeof(context.round_start_scores));
         context.round_end_scores_valid = false;
+        memset(context.round_kokushi_winners, 0,
+               sizeof(context.round_kokushi_winners));
         for (cj4_player player = 0; player < CJ4_PLAYER_COUNT; ++player)
           context.last_causal_record[player] = UINT32_MAX;
         continue;
@@ -420,6 +451,12 @@ bool cj4me_generate_dataset(const cj4me_selfplay_config *config, char *error,
       if (cj4_state_phase(&state) == CJ4_PHASE_ROUND_END) {
         memcpy(context.round_end_scores, state.scores,
                sizeof(context.round_end_scores));
+        if (!collect_kokushi_winners(&state, &rules,
+                                     context.round_kokushi_winners)) {
+          context.failed = true;
+          context.failure = "unable to collect winning yaku";
+          break;
+        }
         context.round_end_scores_valid = true;
       }
 
