@@ -46,6 +46,24 @@ round. Increase it when using several rollouts per action. Counterfactual mode
 writes completed records directly and does not allocate a buffer proportional
 to this limit.
 
+## Parallel generation
+
+Generate independent shards with different seeds when using multiple CPU
+processes. Each process must write to a different output path. Merge completed
+shards in a deterministic order before training:
+
+```sh
+python -m cj4me.merge \
+  --output datasets/train.cj4medata \
+  datasets/train-00.cj4medata \
+  datasets/train-01.cj4medata
+```
+
+The merge command validates every shard header and exact file size, preserves
+the supplied input order, streams records without loading the dataset into
+memory, and writes the result atomically. It refuses to replace an existing
+output unless `--overwrite` is specified.
+
 ## Determinism and information boundary
 
 Rollouts use a PRNG stream derived from the generator seed, decision serial,

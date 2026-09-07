@@ -16,6 +16,7 @@ dependencies = [
 [project.scripts]
 cj4me-train = "cj4me.train:main"
 cj4me-export = "cj4me.export:main"
+cj4me-merge = "cj4me.merge:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

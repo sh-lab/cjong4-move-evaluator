@@ -5,11 +5,10 @@
 自己対局からdataset生成、PyTorch学習、float32/INT8 export、Pure C推論、
 モデルを使った自己対局までのE2E経路は動作している。
 
-一方、現在のdatasetは選択した行動に局終了時の点数差を割り当てる
-on-policy returnであり、合法手ごとのcounterfactual rolloutは未実装である。
-ランダム自己対局のpilotではゼロ報酬が94〜97%を占め、学習lossは下がっても
-validationでは常にゼロを返すbaselineを上回れなかった。このため、ゲーム数を
-増やす前に教師データと学習評価を改善する。
+従来のon-policy returnに加え、各判断点で合法手ごとに局終了まで分岐する
+counterfactual Monte Carlo rolloutを実装済みである。ランダム自己対局では
+ゼロ報酬が多く、1 rolloutの教師値にも大きな分散があるため、独立seedのshardを
+並列生成して十分な局数を確保し、対局成績を含む評価へ進む。
 
 ## 個性モデル
 
@@ -111,7 +110,8 @@ cjong4の合法手
 8. **完了:** datasetへ国士無双和了フラグを追加し、8種類の教師報酬プリセットを実装する
 9. **完了:** 合法手ごとのcounterfactual Monte Carlo rolloutを追加する
 10. 必要に応じてPlayerViewと整合する未知牌の再決定化を追加する
-11. `standard`を学習し、そこから残り7種類をファインチューニングする
+11. **進行中:** dataset shardの決定的結合を使って並列生成し、`standard`を
+    学習して、そこから残り7種類をファインチューニングする
 12. 個性ごとの対局成績、放銃率、和了率、平均打点、鳴き率、リーチ率を比較する
 13. `cjong4-opponent`とWASMへ8モデルとフィルター設定を統合する
 

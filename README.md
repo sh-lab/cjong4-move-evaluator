@@ -361,6 +361,16 @@ python -m cj4me.export \
   --calibration-dataset samples.cj4medata
 ```
 
+並列生成したdataset shardは、指定順を維持したままストリーミング結合できます。
+入力headerとファイルサイズを検証し、出力は一時ファイルからatomicに置換します。
+
+```sh
+python -m cj4me.merge \
+  --output samples.cj4medata \
+  datasets/train-00.cj4medata \
+  datasets/train-01.cj4medata
+```
+
 trainerはvalidation lossが最良だったepochのcheckpointを保存します。
 `--patience` 回連続で改善しなければearly stoppingし、`0`を指定すると
 early stoppingを無効にします。`--min-delta`で改善とみなす最小値を指定できます。
