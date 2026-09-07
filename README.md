@@ -280,6 +280,25 @@ dataset が生成されます。
 
 詳細は[方策フィルター](docs/policy-filter.md)を参照してください。
 
+合法手ごとのcounterfactual Monte Carlo datasetを生成する場合は、1合法手
+あたりの試行数を指定します。各試行は平均せず独立したレコードとして保存されます。
+
+```sh
+./build/cj4me_generate \
+  --games 10 \
+  --seed 4 \
+  --epsilon 1.0 \
+  --reward-scale 8000 \
+  --rollouts-per-action 4 \
+  --max-records-per-round 32768 \
+  --output counterfactual.cj4medata
+```
+
+`--rollouts-per-action 0`は従来のon-policy生成です。
+`--max-rollout-decisions N`を指定すると、各ゲームの先頭N判断だけでrolloutを
+行えるためsmoke testに利用できます。詳細は
+[counterfactual Monte Carlo rollout](docs/counterfactual-rollout.md)を参照してください。
+
 ## Cでのモデル読み込みと行動選択
 
 モデル本体は大きいため、setup時に一度だけ確保し、推論中は同じmodelと
@@ -398,6 +417,7 @@ cmake --build build-wasm --parallel
 - [model形式 v1（旧形式）](docs/model-format-v1.md)
 - [方策フィルター](docs/policy-filter.md)
 - [個性別の教師報酬](docs/personality-rewards.md)
+- [counterfactual Monte Carlo rollout](docs/counterfactual-rollout.md)
 
 ## 今後の開発方針
 
@@ -405,8 +425,8 @@ cmake --build build-wasm --parallel
 
 ## 初回実装の制限
 
-- 記録するのは実際に選択した行動の on-policy return だけです。
-- 未選択の合法手へ分岐する counterfactual rollout は未実装です。
+- 既定では選択した行動のon-policy returnを記録し、オプションで全合法手の
+  counterfactual rolloutを記録できます。
 - 未知牌の再決定化は未実装です。
 - SIMD最適化は未実装で、C11のscalar参照実装を使用します。
 - dataset v3は国士無双和了を含む教師用事実を保持し、trainerで8種類の

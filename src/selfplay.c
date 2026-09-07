@@ -22,6 +22,9 @@ typedef struct {
   cj4me_rng rng;
   cj4me_dataset_record *pending;
   uint32_t pending_count;
+  uint32_t rollout_records_round;
+  uint32_t rollout_decisions_game;
+  uint64_t decision_serial;
   int32_t round_start_scores[CJ4_PLAYER_COUNT];
   int32_t round_end_scores[CJ4_PLAYER_COUNT];
   uint32_t last_causal_record[CJ4_PLAYER_COUNT];
@@ -30,7 +33,21 @@ typedef struct {
   bool failed;
   const char *failure;
   const cj4_rules *rules;
+  cj4me_dataset_writer *writer;
+  const cj4_mahjong *decision_state;
 } selfplay_context;
+
+typedef struct {
+  cj4_mahjong round_end;
+  cj4_mahjong settled;
+  bool direct_deal_in;
+} rollout_result;
+
+static bool write_counterfactual_records(selfplay_context *context,
+                                         const cj4_player_view *view,
+                                         const cj4_action *actions,
+                                         uint8_t action_count,
+                                         uint64_t decision_serial);
 
 static bool action_is_open_call(cj4_action_type type) {
   return type == CJ4_ACTION_CHI || type == CJ4_ACTION_PON ||
@@ -77,6 +94,38 @@ static bool player_is_menzen(const cj4_player_view *view) {
   for (uint8_t i = 0; i < melds.count; ++i)
     if (melds.items[i].type != CJ4_MELD_ANKAN)
       return false;
+  return true;
+}
+
+static bool initialize_record(cj4me_dataset_record *record,
+                              const cj4_player_view *view,
+                              const cj4_rules *rules, const cj4_action *actions,
+                              uint8_t action_count,
+                              const cj4_action *selected) {
+  if (!record || !view || !rules || !actions || !selected ||
+      selected->player >= CJ4_PLAYER_COUNT)
+    return false;
+  memset(record, 0, sizeof(*record));
+  if (!cj4me_encode_features(view, rules, selected, record->features))
+    return false;
+  record->action_player = selected->player;
+  record->action_type = (uint8_t)selected->type;
+  record->decision_discard_count =
+      cj4_location_collect_discards(view->locations).count;
+  record->available_call_mask = available_call_mask(actions, action_count);
+  if (player_is_menzen(view))
+    record->fact_flags |= CJ4ME_FACT_WAS_MENZEN;
+  if (action_is_open_call(selected->type)) {
+    record->fact_flags |= CJ4ME_FACT_CHOSE_CALL;
+    if ((record->fact_flags & CJ4ME_FACT_WAS_MENZEN) != 0u)
+      record->fact_flags |= CJ4ME_FACT_OPENED_HAND;
+  }
+  if (record->available_call_mask != 0u)
+    record->fact_flags |= CJ4ME_FACT_CALL_AVAILABLE;
+  if (action_type_available(actions, action_count, CJ4_ACTION_RIICHI))
+    record->fact_flags |= CJ4ME_FACT_RIICHI_AVAILABLE;
+  if (selected->type == CJ4_ACTION_RIICHI)
+    record->fact_flags |= CJ4ME_FACT_CHOSE_RIICHI;
   return true;
 }
 
@@ -177,6 +226,23 @@ static cj4_action selfplay_decide(void *opaque, const cj4_player_view *view,
       actions[selected].type == CJ4_ACTION_RON) {
     return actions[selected];
   }
+  if (context->config->rollouts_per_action > 0u) {
+    uint64_t decision_serial = context->decision_serial++;
+    bool should_rollout =
+        context->config->max_rollout_decisions_per_game == 0u ||
+        context->rollout_decisions_game <
+            context->config->max_rollout_decisions_per_game;
+    if (should_rollout) {
+      if (!write_counterfactual_records(context, view, actions, action_count,
+                                        decision_serial)) {
+        context->failed = true;
+        context->failure = "counterfactual rollout failed";
+        return actions[selected];
+      }
+      ++context->rollout_decisions_game;
+    }
+    return actions[selected];
+  }
   if (context->pending_count >= context->config->max_records_per_round) {
     context->failed = true;
     context->failure = "maximum records per round exceeded";
@@ -184,31 +250,12 @@ static cj4_action selfplay_decide(void *opaque, const cj4_player_view *view,
   }
 
   record = &context->pending[context->pending_count];
-  memset(record, 0, sizeof(*record));
-  if (!cj4me_encode_features(view, context->rules, &actions[selected],
-                             record->features)) {
+  if (!initialize_record(record, view, context->rules, actions, action_count,
+                         &actions[selected])) {
     context->failed = true;
     context->failure = "feature encoding failed";
     return actions[selected];
   }
-  record->action_player = actions[selected].player;
-  record->action_type = (uint8_t)actions[selected].type;
-  record->decision_discard_count =
-      cj4_location_collect_discards(view->locations).count;
-  record->available_call_mask = available_call_mask(actions, action_count);
-  if (player_is_menzen(view))
-    record->fact_flags |= CJ4ME_FACT_WAS_MENZEN;
-  if (action_is_open_call(actions[selected].type)) {
-    record->fact_flags |= CJ4ME_FACT_CHOSE_CALL;
-    if ((record->fact_flags & CJ4ME_FACT_WAS_MENZEN) != 0u)
-      record->fact_flags |= CJ4ME_FACT_OPENED_HAND;
-  }
-  if (record->available_call_mask != 0u)
-    record->fact_flags |= CJ4ME_FACT_CALL_AVAILABLE;
-  if (action_type_available(actions, action_count, CJ4_ACTION_RIICHI))
-    record->fact_flags |= CJ4ME_FACT_RIICHI_AVAILABLE;
-  if (actions[selected].type == CJ4_ACTION_RIICHI)
-    record->fact_flags |= CJ4ME_FACT_CHOSE_RIICHI;
   if (action_can_cause_ron(actions[selected].type))
     context->last_causal_record[actions[selected].player] =
         context->pending_count;
@@ -261,6 +308,221 @@ static bool collect_kokushi_winners(const cj4_mahjong *round_end,
         winners[result->player] = true;
         break;
       }
+    }
+  }
+  return true;
+}
+
+static bool actions_equal(const cj4_action *first, const cj4_action *second) {
+  if (first->type != second->type || first->player != second->player ||
+      first->tile != second->tile || first->tile_count != second->tile_count)
+    return false;
+  for (uint8_t i = 0; i < first->tile_count; ++i)
+    if (first->tiles[i] != second->tiles[i])
+      return false;
+  return true;
+}
+
+static uint64_t mix_seed(uint64_t value) {
+  value += UINT64_C(0x9e3779b97f4a7c15);
+  value = (value ^ (value >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+  value = (value ^ (value >> 27)) * UINT64_C(0x94d049bb133111eb);
+  return value ^ (value >> 31);
+}
+
+static uint64_t rollout_seed(uint64_t base_seed, uint64_t decision_serial,
+                             uint32_t rollout_index) {
+  uint64_t value = base_seed;
+  value ^= mix_seed(decision_serial + UINT64_C(0x632be59bd9b4e019));
+  value ^= mix_seed((uint64_t)rollout_index + UINT64_C(0x8cb92baa3f3d8dd7));
+  return mix_seed(value);
+}
+
+typedef struct {
+  selfplay_context chooser;
+  cj4_player forced_player;
+  cj4_action forced_action;
+  bool force_pending;
+} rollout_context;
+
+static cj4_action rollout_decide(void *opaque, const cj4_player_view *view,
+                                 const cj4_action *actions,
+                                 uint8_t action_count) {
+  rollout_context *rollout = (rollout_context *)opaque;
+  uint8_t selected;
+  if (!rollout || !view || !actions || action_count == 0u)
+    return (cj4_action){0};
+  if (rollout->force_pending && view->player == rollout->forced_player) {
+    for (uint8_t i = 0; i < action_count; ++i) {
+      if (actions_equal(&rollout->forced_action, &actions[i])) {
+        rollout->force_pending = false;
+        return actions[i];
+      }
+    }
+    rollout->chooser.failed = true;
+    rollout->chooser.failure = "forced rollout action was not offered";
+    return actions[0];
+  }
+  selected =
+      forced_or_random_index(&rollout->chooser, view, actions, action_count);
+  return actions[selected];
+}
+
+static bool run_counterfactual_rollout(const selfplay_context *context,
+                                       const cj4_action *forced_action,
+                                       uint64_t seed, rollout_result *result) {
+  rollout_context rollout;
+  cj4m_player_delegate delegates[CJ4_PLAYER_COUNT];
+  cj4_mahjong state;
+  bool forced_applied = false;
+  bool check_direct_deal_in = false;
+  bool have_round_end = false;
+  uint32_t steps = 0u;
+  if (!context || !context->decision_state || !forced_action || !result)
+    return false;
+  memset(&rollout, 0, sizeof(rollout));
+  memset(result, 0, sizeof(*result));
+  rollout.chooser.config = context->config;
+  rollout.chooser.rules = context->rules;
+  rollout.forced_player = forced_action->player;
+  rollout.forced_action = *forced_action;
+  rollout.force_pending = true;
+  cj4me_rng_seed(&rollout.chooser.rng, seed);
+  for (cj4_player player = 0; player < CJ4_PLAYER_COUNT; ++player) {
+    delegates[player].ctx = &rollout;
+    delegates[player].decide = rollout_decide;
+  }
+  state = *context->decision_state;
+
+  while (steps < context->config->max_steps_per_game) {
+    cj4_phase phase = cj4_state_phase(&state);
+    cj4_mahjong next;
+    if (phase == CJ4_PHASE_SETTLE) {
+      if (!have_round_end || !forced_applied)
+        return false;
+      result->settled = state;
+      return true;
+    }
+    if (phase == CJ4_PHASE_GAME_END)
+      return false;
+    if (phase == CJ4_PHASE_ROUND_END) {
+      result->round_end = state;
+      have_round_end = true;
+    }
+
+    next = cj4m_step(&state, context->rules, delegates);
+    ++steps;
+    if (rollout.chooser.failed)
+      return false;
+    if (!forced_applied) {
+      if (rollout.force_pending)
+        return false;
+      forced_applied = true;
+      check_direct_deal_in = action_can_cause_ron(forced_action->type);
+    } else if (check_direct_deal_in) {
+      if (cj4_state_phase(&next) == CJ4_PHASE_ROUND_END &&
+          cj4_state_round_end_type(&next) == CJ4_ROUND_END_RON &&
+          cj4_state_current_player(&next) == forced_action->player) {
+        result->direct_deal_in = true;
+      }
+      check_direct_deal_in = false;
+    }
+    state = next;
+  }
+  return false;
+}
+
+static bool finish_counterfactual_record(selfplay_context *context,
+                                         const cj4_player_view *view,
+                                         const cj4_action *actions,
+                                         uint8_t action_count,
+                                         const cj4_action *candidate,
+                                         const rollout_result *result) {
+  cj4me_reward_fn reward =
+      context->config->reward ? context->config->reward : default_reward;
+  cj4me_dataset_record record;
+  cj4_player player = candidate->player;
+  int64_t score_delta;
+  int64_t settlement_delta;
+  bool kokushi_winners[CJ4_PLAYER_COUNT];
+  bool has_nagashi_mangan = false;
+  cj4_player discarder = CJ4_PLAYER_COUNT;
+  if (!initialize_record(&record, view, context->rules, actions, action_count,
+                         candidate))
+    return false;
+  score_delta = (int64_t)result->settled.scores[player] -
+                (int64_t)context->round_start_scores[player];
+  settlement_delta = (int64_t)result->settled.scores[player] -
+                     (int64_t)result->round_end.scores[player];
+  if (score_delta < INT32_MIN || score_delta > INT32_MAX ||
+      settlement_delta < INT32_MIN || settlement_delta > INT32_MAX)
+    return false;
+  if (!collect_kokushi_winners(&result->round_end, context->rules,
+                               kokushi_winners))
+    return false;
+  if (cj4_state_round_end_type(&result->settled) ==
+      CJ4_ROUND_END_EXHAUSTIVE_DRAW) {
+    for (cj4_player other = 0; other < CJ4_PLAYER_COUNT; ++other)
+      has_nagashi_mangan |= cj4_is_nagashi_mangan(&result->settled, other);
+  }
+  if (cj4_state_round_end_type(&result->settled) == CJ4_ROUND_END_RON)
+    discarder = cj4_state_current_player(&result->settled);
+
+  record.target =
+      reward(context->config->reward_context, player,
+             context->round_start_scores[player],
+             result->settled.scores[player], context->config->reward_scale);
+  record.score_delta = (int32_t)score_delta;
+  record.settlement_delta = (int32_t)settlement_delta;
+  record.round_discard_count = result->settled.discard_count;
+  if (record.decision_discard_count > record.round_discard_count)
+    return false;
+  record.discards_until_end =
+      record.round_discard_count - record.decision_discard_count;
+  record.round_end_type = (uint8_t)cj4_state_round_end_type(&result->settled);
+  record.tenpai_status = (uint8_t)tenpai_status_at_draw(
+      &result->settled, player, record.settlement_delta, has_nagashi_mangan);
+  if (cj4_state_is_winner(&result->settled, player)) {
+    record.fact_flags |= CJ4ME_FACT_PLAYER_WON;
+    if (kokushi_winners[player])
+      record.fact_flags |= CJ4ME_FACT_PLAYER_WON_KOKUSHI;
+    if (record.settlement_delta > 0)
+      record.win_points = record.settlement_delta;
+  }
+  if (player == discarder) {
+    record.fact_flags |= CJ4ME_FACT_PLAYER_DEALT_IN;
+    if (record.settlement_delta < 0)
+      record.deal_in_points = -record.settlement_delta;
+  }
+  if (result->direct_deal_in)
+    record.fact_flags |= CJ4ME_FACT_DEAL_IN_ACTION;
+  return isfinite(record.target) &&
+         cj4me_dataset_writer_append(context->writer, &record);
+}
+
+static bool write_counterfactual_records(selfplay_context *context,
+                                         const cj4_player_view *view,
+                                         const cj4_action *actions,
+                                         uint8_t action_count,
+                                         uint64_t decision_serial) {
+  uint64_t added =
+      (uint64_t)action_count * context->config->rollouts_per_action;
+  if (!context->writer || !context->decision_state || added > UINT32_MAX ||
+      (uint64_t)context->rollout_records_round + added >
+          context->config->max_records_per_round)
+    return false;
+  for (uint8_t action = 0; action < action_count; ++action) {
+    for (uint32_t rollout = 0; rollout < context->config->rollouts_per_action;
+         ++rollout) {
+      rollout_result result;
+      uint64_t seed =
+          rollout_seed(context->config->seed, decision_serial, rollout);
+      if (!run_counterfactual_rollout(context, &actions[action], seed,
+                                      &result) ||
+          !finish_counterfactual_record(context, view, actions, action_count,
+                                        &actions[action], &result))
+        return false;
+      ++context->rollout_records_round;
     }
   }
   return true;
@@ -360,21 +622,22 @@ bool cj4me_generate_dataset(const cj4me_selfplay_config *config, char *error,
     set_error(error, error_size, "invalid self-play configuration");
     return false;
   }
-  pending_size =
-      (size_t)config->max_records_per_round * sizeof(cj4me_dataset_record);
-  if (pending_size / sizeof(cj4me_dataset_record) !=
-      config->max_records_per_round) {
-    set_error(error, error_size, "round buffer size overflows");
-    return false;
-  }
-
   memset(&context, 0, sizeof(context));
   context.config = config;
-  context.pending = (cj4me_dataset_record *)calloc(
-      config->max_records_per_round, sizeof(cj4me_dataset_record));
-  if (!context.pending) {
-    set_error(error, error_size, "unable to allocate round buffer");
-    return false;
+  if (config->rollouts_per_action == 0u) {
+    pending_size =
+        (size_t)config->max_records_per_round * sizeof(cj4me_dataset_record);
+    if (pending_size / sizeof(cj4me_dataset_record) !=
+        config->max_records_per_round) {
+      set_error(error, error_size, "round buffer size overflows");
+      return false;
+    }
+    context.pending = (cj4me_dataset_record *)calloc(
+        config->max_records_per_round, sizeof(cj4me_dataset_record));
+    if (!context.pending) {
+      set_error(error, error_size, "unable to allocate round buffer");
+      return false;
+    }
   }
   cj4me_rng_seed(&context.rng, config->seed);
   for (cj4_player player = 0; player < CJ4_PLAYER_COUNT; ++player) {
@@ -395,6 +658,7 @@ bool cj4me_generate_dataset(const cj4me_selfplay_config *config, char *error,
     return false;
   }
   writer_open = true;
+  context.writer = &writer;
 
   for (uint32_t game = 0; game < config->games; ++game) {
     cj4_mahjong state;
@@ -410,6 +674,8 @@ bool cj4me_generate_dataset(const cj4me_selfplay_config *config, char *error,
     memcpy(context.round_start_scores, state.scores,
            sizeof(context.round_start_scores));
     context.pending_count = 0u;
+    context.rollout_records_round = 0u;
+    context.rollout_decisions_game = 0u;
     context.round_end_scores_valid = false;
     for (cj4_player player = 0; player < CJ4_PLAYER_COUNT; ++player)
       context.last_causal_record[player] = UINT32_MAX;
@@ -441,6 +707,7 @@ bool cj4me_generate_dataset(const cj4me_selfplay_config *config, char *error,
         memcpy(context.round_start_scores, state.scores,
                sizeof(context.round_start_scores));
         context.round_end_scores_valid = false;
+        context.rollout_records_round = 0u;
         memset(context.round_kokushi_winners, 0,
                sizeof(context.round_kokushi_winners));
         for (cj4_player player = 0; player < CJ4_PLAYER_COUNT; ++player)
@@ -460,7 +727,9 @@ bool cj4me_generate_dataset(const cj4me_selfplay_config *config, char *error,
         context.round_end_scores_valid = true;
       }
 
+      context.decision_state = &state;
       state = cj4m_step(&state, &rules, delegates);
+      context.decision_state = NULL;
       if (context.failed)
         break;
     }

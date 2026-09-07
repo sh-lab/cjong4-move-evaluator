@@ -26,6 +26,8 @@ typedef struct {
   float reward_scale;
   uint32_t max_steps_per_game;
   uint32_t max_records_per_round;
+  uint32_t rollouts_per_action;
+  uint32_t max_rollout_decisions_per_game;
   const char *output_path;
   cj4me_score_actions_fn score_actions;
   void *score_context;

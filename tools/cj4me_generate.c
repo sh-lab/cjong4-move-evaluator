@@ -77,6 +77,7 @@ static void print_usage(const char *program) {
           "Usage: %s --games N --seed N --epsilon F --reward-scale F "
           "--output PATH [--model PATH] [--max-steps N] "
           "[--max-records-per-round N] "
+          "[--rollouts-per-action N] [--max-rollout-decisions N] "
           "[--policy standard|safe|menzen|call|speed|kokushi|riichi|dama] "
           "[--filter-mode hard|soft] [--filter-strength F]\n",
           program);
@@ -190,6 +191,15 @@ static int parse_arguments(int argc, char **argv, cli_config *config) {
       }
     } else if (strcmp(argv[i], "--max-records-per-round") == 0) {
       if (!parse_u32(argv[++i], &config->selfplay.max_records_per_round)) {
+        return -1;
+      }
+    } else if (strcmp(argv[i], "--rollouts-per-action") == 0) {
+      if (!parse_u32(argv[++i], &config->selfplay.rollouts_per_action)) {
+        return -1;
+      }
+    } else if (strcmp(argv[i], "--max-rollout-decisions") == 0) {
+      if (!parse_u32(argv[++i],
+                     &config->selfplay.max_rollout_decisions_per_game)) {
         return -1;
       }
     } else {
