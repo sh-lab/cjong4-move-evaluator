@@ -107,14 +107,18 @@ void test_rng(void) {
   {
     const char *path_a = "cj4me-rollout-a.cj4medata";
     const char *path_b = "cj4me-rollout-b.cj4medata";
+    const char *path_skipped = "cj4me-rollout-skipped.cj4medata";
     cj4_rules rules = cj4_rules_default();
     cj4_mahjong initial;
     cj4_action actions[CJ4M_MAX_ACTIONS];
     cj4me_dataset_reader reader;
+    cj4me_dataset_reader skipped_reader;
     cj4me_dataset_record record;
     cj4me_dataset_record previous;
+    cj4me_dataset_record skipped_record;
     char error[128];
     uint8_t action_count;
+    uint32_t first_game_records;
     uint32_t records_read = 0u;
     int varied_outcome = 0;
     cj4me_selfplay_config config = {.games = 1u,
@@ -144,6 +148,7 @@ void test_rng(void) {
     assert(files_equal(path_a, path_b));
     assert(cj4me_dataset_reader_open(&reader, path_a));
     assert(reader.record_count == (uint32_t)action_count * 2u);
+    first_game_records = reader.record_count;
     while (cj4me_dataset_reader_next(&reader, &record)) {
       assert(record.action_player == cj4_state_current_player(&initial));
       assert(record.decision_discard_count == 0u);
@@ -165,7 +170,37 @@ void test_rng(void) {
     assert(records_read == reader.record_count);
     assert(varied_outcome);
     cj4me_dataset_reader_close(&reader);
+
+    config.games = 2u;
+    config.output_path = path_b;
+    assert(cj4me_generate_dataset(&config, error, sizeof(error)));
+    config.games = 1u;
+    config.skip_games = 1u;
+    config.output_path = path_skipped;
+    assert(cj4me_generate_dataset(&config, error, sizeof(error)));
+
+    assert(cj4me_dataset_reader_open(&reader, path_b));
+    assert(cj4me_dataset_reader_open(&skipped_reader, path_skipped));
+    assert(reader.record_count ==
+           first_game_records + skipped_reader.record_count);
+    for (uint32_t i = 0; i < first_game_records; ++i)
+      assert(cj4me_dataset_reader_next(&reader, &record));
+    while (cj4me_dataset_reader_next(&skipped_reader, &skipped_record)) {
+      assert(cj4me_dataset_reader_next(&reader, &record));
+      assert(memcmp(&record, &skipped_record, sizeof(record)) == 0);
+    }
+    assert(!skipped_reader.failed);
+    assert(!cj4me_dataset_reader_next(&reader, &record));
+    assert(!reader.failed);
+    cj4me_dataset_reader_close(&reader);
+    cj4me_dataset_reader_close(&skipped_reader);
+
+    assert(cj4me_dataset_reader_open(&reader, path_skipped));
+    assert(reader.record_count > 0u);
+    cj4me_dataset_reader_close(&reader);
+
     assert(remove(path_a) == 0);
     assert(remove(path_b) == 0);
+    assert(remove(path_skipped) == 0);
   }
 }

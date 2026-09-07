@@ -21,6 +21,7 @@ typedef float (*cj4me_reward_fn)(void *context, cj4_player player,
 
 typedef struct {
   uint32_t games;
+  uint32_t skip_games;
   uint64_t seed;
   float epsilon;
   float reward_scale;

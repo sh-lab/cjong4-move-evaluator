@@ -41,6 +41,12 @@ eligible decision points in each game. Zero, the default, means unlimited. It
 is intended mainly for smoke tests. Every legal action is still evaluated at
 each included decision point.
 
+`--skip-games N` simulates the first `N` games without writing records or
+running rollouts, while preserving the main-game PRNG sequence and rollout
+decision serials. It is intended to isolate and reproduce a later game from a
+multi-game run. For example, `--skip-games 4 --games 1` reproduces zero-based
+game index 4 from the same seed.
+
 `--max-records-per-round` limits the total rollout records written by a single
 round. Increase it when using several rollouts per action. Counterfactual mode
 writes completed records directly and does not allocate a buffer proportional
@@ -63,6 +69,11 @@ The merge command validates every shard header and exact file size, preserves
 the supplied input order, streams records without loading the dataset into
 memory, and writes the result atomically. It refuses to replace an existing
 output unless `--overwrite` is specified.
+
+When counterfactual generation fails, the error reports the zero-based game
+index, game step, decision serial, candidate action index, rollout index,
+records already written in the round, and configured per-round limit. Combine
+the reported game index with `--skip-games` to reproduce only that game.
 
 ## Determinism and information boundary
 

@@ -74,7 +74,8 @@ static void free_model(model_policy *policy) {
 
 static void print_usage(const char *program) {
   fprintf(stderr,
-          "Usage: %s --games N --seed N --epsilon F --reward-scale F "
+          "Usage: %s --games N [--skip-games N] --seed N --epsilon F "
+          "--reward-scale F "
           "--output PATH [--model PATH] [--max-steps N] "
           "[--max-records-per-round N] "
           "[--rollouts-per-action N] [--max-rollout-decisions N] "
@@ -160,6 +161,9 @@ static int parse_arguments(int argc, char **argv, cli_config *config) {
       return -1;
     if (strcmp(argv[i], "--games") == 0) {
       if (!parse_u32(argv[++i], &config->selfplay.games))
+        return -1;
+    } else if (strcmp(argv[i], "--skip-games") == 0) {
+      if (!parse_u32(argv[++i], &config->selfplay.skip_games))
         return -1;
     } else if (strcmp(argv[i], "--seed") == 0) {
       if (!parse_u64(argv[++i], &config->selfplay.seed))
