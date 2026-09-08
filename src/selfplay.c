@@ -40,6 +40,12 @@ typedef struct {
   uint64_t current_decision_serial;
   uint8_t current_action_index;
   uint32_t current_rollout_index;
+  uint32_t current_rollout_step;
+  uint8_t current_rollout_phase;
+  uint8_t current_rollout_player;
+  uint8_t current_rollout_discard_count;
+  uint8_t current_rollout_wall_pos;
+  cj4_action current_candidate;
   const cj4_rules *rules;
   cj4me_dataset_writer *writer;
   const cj4_mahjong *decision_state;
@@ -415,6 +421,11 @@ static bool run_counterfactual_rollout(selfplay_context *context,
   while (steps < context->config->max_steps_per_game) {
     cj4_phase phase = cj4_state_phase(&state);
     cj4_mahjong next;
+    context->current_rollout_step = steps;
+    context->current_rollout_phase = (uint8_t)phase;
+    context->current_rollout_player = (uint8_t)cj4_state_current_player(&state);
+    context->current_rollout_discard_count = state.discard_count;
+    context->current_rollout_wall_pos = state.wall_pos;
     if (phase == CJ4_PHASE_SETTLE) {
       if (!have_round_end) {
         context->failure = "rollout reached settle without round-end state";
@@ -442,6 +453,10 @@ static bool run_counterfactual_rollout(selfplay_context *context,
       context->failure = rollout.chooser.failure
                              ? rollout.chooser.failure
                              : "rollout action selection failed";
+      return false;
+    }
+    if (memcmp(&next, &state, sizeof(state)) == 0) {
+      context->failure = "rollout manager step made no progress";
       return false;
     }
     if (!forced_applied) {
@@ -567,6 +582,7 @@ static bool write_counterfactual_records(selfplay_context *context,
   }
   for (uint8_t action = 0; action < action_count; ++action) {
     context->current_action_index = action;
+    context->current_candidate = actions[action];
     for (uint32_t rollout = 0; rollout < context->config->rollouts_per_action;
          ++rollout) {
       rollout_result result;
@@ -810,11 +826,19 @@ bool cj4me_generate_dataset(const cj4me_selfplay_config *config, char *error,
       (void)snprintf(
           error, error_size,
           "%s (game=%" PRIu32 " step=%" PRIu32 " decision=%" PRIu64
-          " action_index=%u rollout=%" PRIu32 " records_round=%" PRIu32
-          " limit=%" PRIu32 ")",
+          " action_index=%u action_type=%u action_player=%u tile=%u"
+          " rollout=%" PRIu32 " rollout_step=%" PRIu32
+          " phase=%u current_player=%u discards=%u wall_pos=%u"
+          " records_round=%" PRIu32 " limit=%" PRIu32 ")",
           context.failure, context.current_game, context.current_step,
           context.current_decision_serial, context.current_action_index,
-          context.current_rollout_index, context.rollout_records_round,
+          (unsigned int)context.current_candidate.type,
+          (unsigned int)context.current_candidate.player,
+          (unsigned int)context.current_candidate.tile,
+          context.current_rollout_index, context.current_rollout_step,
+          context.current_rollout_phase, context.current_rollout_player,
+          context.current_rollout_discard_count,
+          context.current_rollout_wall_pos, context.rollout_records_round,
           config->max_records_per_round);
     } else {
       set_error(error, error_size, context.failure);

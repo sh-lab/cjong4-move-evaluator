@@ -211,7 +211,7 @@ PyTorch output ~= native C output ~= WASM output
 
 - CMake 3.16 以上
 - ISO C11 コンパイラ
-- cjong4 3.3.0 以上（3.x）
+- cjong4 4.0.0 以上（4.x）
 - Python 3.10 以上
 - NumPy、PyTorch、pytest
 
@@ -230,7 +230,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 `CJONG4_SOURCE_DIR` を省略した場合は
-`find_package(cjong4 3.3.0 CONFIG REQUIRED)` を使用します。
+`find_package(cjong4 4.0.0 CONFIG REQUIRED)` を使用します。
 親プロジェクトがすでに `cjong4::cj4` を定義している場合は、そのtargetを
 再利用するため追加指定は不要です。
 
