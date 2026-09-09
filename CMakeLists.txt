@@ -56,6 +56,10 @@ function(cj4me_enable_warnings target)
 endfunction()
 
 if(CJ4ME_BUILD_TOOLS)
+    add_executable(cj4me_battle tools/cj4me_battle.c)
+    target_link_libraries(cj4me_battle PRIVATE cj4me)
+    target_include_directories(cj4me_battle PRIVATE src)
+    cj4me_enable_warnings(cj4me_battle)
     add_executable(cj4me_generate tools/cj4me_generate.c)
     target_link_libraries(cj4me_generate PRIVATE cj4me)
     target_include_directories(cj4me_generate PRIVATE src)
@@ -70,6 +74,7 @@ if(CJ4ME_BUILD_TESTS)
     enable_testing()
     add_executable(cj4me_tests
         tests/test_main.c
+        tests/test_battle.c
         tests/test_dataset.c
         tests/test_evaluator.c
         tests/test_feature.c
@@ -78,6 +83,7 @@ if(CJ4ME_BUILD_TESTS)
         tests/test_rng.c
     )
     target_link_libraries(cj4me_tests PRIVATE cj4me)
+    target_include_directories(cj4me_tests PRIVATE src)
     cj4me_enable_warnings(cj4me_tests)
     if(MSVC)
         target_compile_options(cj4me_tests PRIVATE /UNDEBUG)
