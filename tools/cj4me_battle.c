@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "battle_diagnostics.h"
 #include "battle_policy.h"
 #include "cjong4/core/state_init.h"
 #include "cjong4/core/state_query.h"
@@ -16,6 +17,7 @@ typedef struct {
   cj4me_evaluator_context *model;
   bool random;
   bool failed;
+  battle_diagnostics *diagnostics;
 } player_context;
 
 static cj4_action decide(void *opaque, const cj4_player_view *view,
@@ -23,8 +25,11 @@ static cj4_action decide(void *opaque, const cj4_player_view *view,
   player_context *p = opaque;
   cj4_action result = {0};
   if (p->model)
-    return cj4me_evaluator_decide(p->model, view, actions, count);
-  if (!battle_baseline(&p->rng, p->random, view, actions, count, &result))
+    result = cj4me_evaluator_decide(p->model, view, actions, count);
+  else if (!battle_baseline(&p->rng, p->random, view, actions, count, &result))
+    p->failed = true;
+  if (!p->failed && !(p->model && p->model->failed) && p->diagnostics &&
+      !battle_diagnostics_record(p->diagnostics, view, actions, count, &result))
     p->failed = true;
   return result;
 }
@@ -44,6 +49,8 @@ static bool parse_number(const char *s, uint64_t *out) {
 int main(int argc, char **argv) {
   const char *path = NULL;
   bool random = false, baseline_only = false;
+  bool diagnostics_enabled = false;
+  battle_diagnostics diagnostics = {0};
   uint64_t seeds = 10, seed = 1;
   cj4_rules rules = cj4_rules_default();
   cj4me_model_kind kind;
@@ -53,6 +60,10 @@ int main(int argc, char **argv) {
   double score_sum = 0, rank_sum = 0;
   int rc = 1;
   for (int i = 1; i < argc; ++i) {
+    if (!strcmp(argv[i], "--diagnostics")) {
+      diagnostics_enabled = true;
+      continue;
+    }
     if (!strcmp(argv[i], "--baseline-only")) {
       baseline_only = true;
       continue;
@@ -116,6 +127,8 @@ int main(int argc, char **argv) {
                        (seed + k) ^ (UINT64_C(0x9e3779b97f4a7c15) * (p + 1)));
         players[p].random = p != seat && random;
         players[p].model = p == seat ? eval : NULL;
+        players[p].diagnostics =
+            diagnostics_enabled && p == seat ? &diagnostics : NULL;
         delegates[p] =
             (cj4m_player_delegate){.ctx = &players[p], .decide = decide};
       }
@@ -182,10 +195,14 @@ int main(int argc, char **argv) {
           rounds ? 100.0 * wins / rounds : 0,
           rounds ? 100.0 * dealt_in / rounds : 0);
   rc = 0;
+  if (diagnostics_enabled)
+    battle_diagnostics_print(&diagnostics);
   goto done;
 usage:
-  fprintf(stderr, "Usage: cj4me_battle (--model PATH | --baseline-only) "
-                  "[--opponent shanten|random] [--seeds N] [--seed N]\n");
+  fprintf(
+      stderr,
+      "Usage: cj4me_battle (--model PATH | --baseline-only) "
+      "[--opponent shanten|random] [--seeds N] [--seed N] [--diagnostics]\n");
   rc = 2;
   goto done;
 fail:
